@@ -21,14 +21,16 @@ wss.on('connection', (clientSocket) => {
     // รับข้อมูลจาก Frontend แล้วยิงต่อให้ Gemini API โดยตรง
     clientSocket.on('message', (message) => {
         if (geminiSocket.readyState === WebSocket.OPEN) {
-            geminiSocket.send(message);
+            // แก้ไข: แปลง Buffer เป็น String ก่อนส่งต่อ
+            geminiSocket.send(message.toString());
         }
     });
 
     // รับข้อมูลจาก Gemini API แล้วส่งกลับให้ Frontend
     geminiSocket.on('message', (message) => {
         if (clientSocket.readyState === WebSocket.OPEN) {
-            clientSocket.send(message);
+            // แก้ไข: แปลง Buffer เป็น String ก่อนส่งกลับไปที่ Frontend
+            clientSocket.send(message.toString());
         }
     });
 
