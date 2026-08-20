@@ -9,37 +9,23 @@ console.log(`Backend Server running on port ${PORT}`);
 wss.on('connection', (clientSocket) => {
     console.log('Client connected');
 
-    // กำหนดชื่อโมเดล Gemini 3.1 Flash Live Preview
-    const model = "models/gemini-3.1-flash-live-preview";
-    const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
+    // ใช้ v1alpha สำหรับ Gemini Live Multimodal WebSocket API
+    const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
     
     const geminiSocket = new WebSocket(geminiUrl);
 
     geminiSocket.on('open', () => {
         console.log('Connected to Gemini Live API');
-        
-        // ส่ง Setup Message ทันทีที่เชื่อมต่อสำเร็จ
-        const setupMessage = {
-            setup: {
-                model: model,
-                generationConfig: {
-                    responseModalities: ["AUDIO"],
-                    thinkingConfig: {
-                        thinkingLevel: "minimal"
-                    }
-                }
-            }
-        };
-        geminiSocket.send(JSON.stringify(setupMessage));
     });
 
-    // ส่งต่อข้อมูลระหว่าง Client และ Gemini ผ่าน Proxy
+    // รับข้อมูลจาก Frontend แล้วยิงต่อให้ Gemini API โดยตรง
     clientSocket.on('message', (message) => {
         if (geminiSocket.readyState === WebSocket.OPEN) {
             geminiSocket.send(message);
         }
     });
 
+    // รับข้อมูลจาก Gemini API แล้วส่งกลับให้ Frontend
     geminiSocket.on('message', (message) => {
         if (clientSocket.readyState === WebSocket.OPEN) {
             clientSocket.send(message);
@@ -48,12 +34,22 @@ wss.on('connection', (clientSocket) => {
 
     geminiSocket.on('close', (code, reason) => {
         console.log(`Gemini Closed: Code ${code}, Reason: ${reason}`);
-        clientSocket.close();
+        if (clientSocket.readyState === WebSocket.OPEN) {
+            clientSocket.close();
+        }
     });
 
     clientSocket.on('close', () => {
         if (geminiSocket.readyState === WebSocket.OPEN) {
             geminiSocket.close();
         }
+    });
+
+    geminiSocket.on('error', (err) => {
+        console.error('Gemini Socket Error:', err);
+    });
+
+    clientSocket.on('error', (err) => {
+        console.error('Client Socket Error:', err);
     });
 });
