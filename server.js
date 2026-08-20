@@ -9,40 +9,48 @@ console.log(`Backend Server running on port ${PORT}`);
 wss.on('connection', (clientSocket) => {
     console.log('Client connected');
 
-    // เชื่อมต่อไปยัง Gemini Live API ด้วยโมเดลล่าสุด Gemini 3.1 Flash
-    const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
+    // เปลี่ยนจาก v1alpha เป็น v1beta และระบุโมเดลให้ถูกต้องตามมาตรฐาน Live API
+    const model = "models/gemini-2.5-flash"; // หรือรุ่นที่รองรับ Live API ตามที่คุณใช้งาน
+    const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
     
     const geminiSocket = new WebSocket(geminiUrl);
 
     geminiSocket.on('open', () => {
         console.log('Connected to Gemini Live API');
+        
+        // ส่ง Setup Message ทันทีที่เชื่อมต่อสำเร็จ เพื่อไม่ให้ Gemini ตัดสาย
+        const setupMessage = {
+            setup: {
+                model: model,
+                generationConfig: {
+                    responseModalities: ["TEXT"] // ปรับเป็น ["AUDIO"] ได้หากทำระบบเสียง
+                }
+            }
+        };
+        geminiSocket.send(JSON.stringify(setupMessage));
     });
 
-    // รับข้อมูลจาก Browser -> ส่งต่อให้ Gemini
+    // ส่งต่อข้อมูลระหว่าง Client และ Gemini ผ่าน Proxy
     clientSocket.on('message', (message) => {
         if (geminiSocket.readyState === WebSocket.OPEN) {
-            geminiSocket.send(message.toString());
+            geminiSocket.send(message);
         }
     });
 
-    // รับข้อมูลจาก Gemini -> ส่งกลับให้ Browser
-    geminiSocket.on('message', (data) => {
+    geminiSocket.on('message', (message) => {
         if (clientSocket.readyState === WebSocket.OPEN) {
-            clientSocket.send(data.toString());
+            clientSocket.send(message);
         }
     });
 
-    // ดักจับข้อผิดพลาดจาก Gemini
-    geminiSocket.on('close', (event) => {
-        console.log(`Gemini Closed: Code ${event.code}, Reason: ${event.reason}`);
+    geminiSocket.on('close', (code, reason) => {
+        console.log(`Gemini Closed: Code ${code}, Reason: ${reason}`);
         clientSocket.close();
     });
 
-    geminiSocket.on('error', (err) => {
-        console.error('Gemini Socket Error:', err);
-    });
-
     clientSocket.on('close', () => {
-        geminiSocket.close();
+        if (geminiSocket.readyState === WebSocket.OPEN) {
+            geminiSocket.close();
+        }
     });
 });
