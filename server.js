@@ -4,7 +4,7 @@ const PORT = process.env.PORT || 8080;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 if (!GEMINI_API_KEY) {
-    console.error("❌ ERROR: GEMINI_API_KEY is not set in Environment Variables!");
+    console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
 const wss = new WebSocketServer({ port: PORT });
@@ -15,14 +15,27 @@ wss.on('connection', (clientSocket) => {
 
     const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
     const geminiSocket = new WebSocket(geminiUrl);
+    
+    // 🛠️ สร้าง Queue ไว้เก็บข้อมูล (เช่น setupData) ในระหว่างที่ Gemini ยังเชื่อมต่อไม่เสร็จ
+    const messageQueue = [];
 
     geminiSocket.on('open', () => {
         console.log('Connected to Gemini Live API');
+        // เมื่อ Gemini พร้อมแล้ว ให้ทยอยส่งข้อมูลที่ค้างอยู่ใน Queue ออกไปให้หมด
+        while (messageQueue.length > 0) {
+            const msg = messageQueue.shift();
+            geminiSocket.send(msg);
+        }
     });
 
     clientSocket.on('message', (message) => {
+        const msgString = message.toString();
+        // ถ้า Gemini พร้อมแล้ว ส่งตรงได้เลย
         if (geminiSocket.readyState === WebSocket.OPEN) {
-            geminiSocket.send(message.toString());
+            geminiSocket.send(msgString);
+        } else {
+            // ถ้ายังไม่พร้อม ให้เก็บใส่ Queue ไว้ก่อน ป้องกันข้อมูลสูญหาย
+            messageQueue.push(msgString);
         }
     });
 
