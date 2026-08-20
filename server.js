@@ -10,7 +10,7 @@ wss.on('connection', (clientSocket) => {
     console.log('Client connected');
 
     // เปลี่ยนจาก v1alpha เป็น v1beta และระบุโมเดลให้ถูกต้องตามมาตรฐาน Live API
-    const model = "models/gemini-2.5-flash"; // หรือรุ่นที่รองรับ Live API ตามที่คุณใช้งาน
+    const model = "gemini-3.1-flash-live-preview"; // หรือรุ่นที่รองรับ Live API ตามที่คุณใช้งาน
     const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
     
     const geminiSocket = new WebSocket(geminiUrl);
@@ -23,7 +23,10 @@ wss.on('connection', (clientSocket) => {
             setup: {
                 model: model,
                 generationConfig: {
-                    responseModalities: ["TEXT"] // ปรับเป็น ["AUDIO"] ได้หากทำระบบเสียง
+                    responseModalities: ["AUDIO"] // ปรับเป็น ["AUDIO"] ได้หากทำระบบเสียง
+                    // เพิ่มการตั้งค่าระดับการคิด
+                    thinkingConfig: {
+                    thinkingLevel: "minimal" // ตั้งค่าระดับที่ต้องการ (minimal, low, medium, high)
                 }
             }
         };
