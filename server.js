@@ -1,14 +1,53 @@
+const express = require('express');
+const http = require('http');
 const { WebSocketServer, WebSocket } = require('ws');
+const { Pool } = require('pg');
 
 const PORT = process.env.PORT || 8080;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
-const wss = new WebSocketServer({ port: PORT });
-console.log(`Backend Server running on port ${PORT}`);
+// 1. สร้าง Express และ HTTP Server เพื่อรองรับทั้ง HTTP Route (แก้ปัญหา Upgrade Required) และ WebSocket
+const app = express();
+const server = http.createServer(app);
+
+// HTTP Route พื้นฐาน สำหรับเช็กสถานะเซิร์ฟเวอร์
+app.get('/', (req, res) => {
+    res.status(200).send('Land Matching Backend Server is running successfully! 🚀');
+});
+
+// ตัวอย่าง API สำหรับเชื่อมต่อฐานข้อมูล Supabase (10 ตาราง)
+app.get('/api/users', async (req, res) => {
+    try {
+        const result = await pool.query('SELECT * FROM users LIMIT 10;');
+        res.status(200).json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error('Error fetching users:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// 2. เชื่อมต่อฐานข้อมูล PostgreSQL บน Supabase
+const pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
+pool.connect((err, client, release) => {
+    if (err) {
+        console.error('❌ Database connection error:', err.stack);
+    } else {
+        console.log('✅ Connected to Supabase PostgreSQL successfully!');
+        release();
+    }
+});
+
+// 3. คงโครงสร้าง WebSocketServer เดิมของคุณไว้ทั้งหมด
+const wss = new WebSocketServer({ server });
 
 wss.on('connection', (clientSocket) => {
     console.log('Client connected');
@@ -65,4 +104,9 @@ wss.on('connection', (clientSocket) => {
     clientSocket.on('error', (err) => {
         console.error('Client Socket Error:', err);
     });
+});
+
+// 4. เปลี่ยนมารันผ่าน server.listen และผูกกับ '0.0.0.0' เพื่อให้ Render ทำงานได้อย่างสมบูรณ์
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Backend Server running on port ${PORT}`);
 });
