@@ -32,17 +32,36 @@ app.get('/', (req, res) => {
     res.status(200).send('Land Matching Backend Server is running successfully! 🚀');
 });
 
-// API สำหรับดึงข้อมูล properties พร้อมเก็บบันทึก Error ละเอียด
+// ดึงข้อมูลจาก public.properties และเรียงลำดับตาม property_id
 app.post('/api/properties', async (req, res) => {
     try {
-        console.log('📥 Received request to fetch properties...');
-        const result = await pool.query('SELECT * FROM public.properties ORDER BY property_id ASC;');
-        console.log(`✅ Fetched ${result.rows.length} rows successfully from Supabase.`);
-        res.status(200).json(result.rows);
+        // รับค่า offset และ limit ที่ส่งมาจาก Frontend
+        const offset = req.body.offset || 0;
+        const limit = req.body.limit || 10;
+        
+        // เพิ่ม LIMIT และ OFFSET ใน Query เพื่อรองรับการเลื่อนหน้า (Pagination)
+        const result = await pool.query('SELECT * FROM public.properties ORDER BY property_id ASC LIMIT $1 OFFSET $2;', [limit, offset]);
+        
+        // แปลงชื่อคอลัมน์ (snake_case) ให้ตรงกับตัวแปรที่หน้าเว็บเรียกใช้ (camelCase)
+        const mappedResults = result.rows.map(row => ({
+            ...row,
+            postId: row.post_id || row.property_id || "",
+            salePrice: row.price_sell || row.price || "",
+            rentPrice: row.price_rent || "",
+            facebookPostName: row.facebook_name || "",
+            postDetails: row.details || ""
+        }));
+
+        // จัด Format กลับไปในรูปแบบที่ไฟล์ Index_Git.txt คาดหวัง
+        res.status(200).json({
+            status: 'success',
+            results: mappedResults,
+            nextOffset: offset + mappedResults.length,
+            hasMore: mappedResults.length === limit
+        });
     } catch (error) {
-        console.error('❌ Detailed Error fetching properties:', error.message);
-        console.error(error.stack);
-        res.status(500).json({ success: false, error: error.message });
+        console.error('Error fetching properties:', error);
+        res.status(500).json({ status: 'error', message: error.message });
     }
 });
 
