@@ -36,7 +36,8 @@ app.get('/', (req, res) => {
 app.post('/api/properties', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM public.properties ORDER BY property_id ASC;');
-        res.status(200).json({ success: true, data: result.rows });
+        // ส่ง Array ของข้อมูลกลับไปตรงๆ ให้หน้าเว็บใช้งานได้ทันที
+        res.status(200).json(result.rows);
     } catch (error) {
         console.error('Error fetching properties:', error);
         res.status(500).json({ success: false, error: error.message });
