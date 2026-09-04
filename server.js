@@ -59,7 +59,7 @@ function parseAreaToSqWah(sizeStr) {
     return totalSqWah;
 }
 
-// API สำหรับรับเงื่อนไขและดึงข้อมูลจาก Supabase Line62-216
+// API สำหรับรับเงื่อนไขและดึงข้อมูลจาก Supabase Line62-222
 app.post('/api/properties', async (req, res) => {
     try {
         const offset = parseInt(req.body.offset || 0, 10);
@@ -67,36 +67,34 @@ app.post('/api/properties', async (req, res) => {
         const criteria = req.body.criteria || {};
         const searchText = req.body.searchText || "";
         
-        // 1. ดึงข้อมูลจาก Supabase ทั้งหมด
+        // 1. ดึงข้อมูลจาก Supabase
         const result = await pool.query('SELECT * FROM public.properties ORDER BY property_id ASC;');
         
         let rawResults = result.rows.map(dbRow => {
             return {
                 ...dbRow,
-                facebookPostName: dbRow.facebook_name || "",
-                project: dbRow.project || "",
-                propertyType: dbRow.property_type || "",
-                province: dbRow.province || "",
-                district: dbRow.district || "",
-                road: dbRow.road || "",
-                priceType: dbRow.price_type || "",
-                salePrice: dbRow.price_sell || dbRow.price || "",
-                rentPrice: dbRow.price_rent || "",
+                // ตรวจสอบชื่อฟิลด์จาก Database ให้ครอบคลุมทั้งตัวพิมพ์เล็กและใหญ่
+                facebookPostName: dbRow.facebook_name || dbRow.facebookPostName || "",
+                project: dbRow.project || dbRow.Project || "",
+                propertyType: dbRow.property_type || dbRow.propertyType || "",
+                province: dbRow.province || dbRow.Province || "",
+                district: dbRow.district || dbRow.District || "",
+                road: dbRow.road || dbRow.Road || "",
+                priceType: dbRow.price_type || dbRow.priceType || "",
+                salePrice: dbRow.price_sell || dbRow.priceSell || dbRow.price || "",
+                rentPrice: dbRow.price_rent || dbRow.priceRent || "",
                 price: dbRow.price_sell || dbRow.price || dbRow.price_rent || "ไม่ระบุ",
-                size: dbRow.area || "",
-                areaNum: dbRow.area_num || "",
+                size: dbRow.area || dbRow.size || "",
+                areaNum: dbRow.area_num || dbRow.areaNum || "",
                 phone: dbRow.phone || "",
-                lineId: dbRow.line_id || "",
+                lineId: dbRow.line_id || dbRow.lineId || "",
                 date: dbRow.date || "",
-                latitude: dbRow.use_lat || dbRow.use || "",  
-                longitude: dbRow.use2_lng || dbRow.use2 || "", 
-                use3: dbRow.use3 || "",
-                use4: dbRow.use4 || "",
+                latitude: dbRow.use_lat || dbRow.latitude || dbRow.use || "",  
+                longitude: dbRow.use2_lng || dbRow.longitude || dbRow.use2 || "", 
                 url: dbRow.url || "#",
-                postId: dbRow.post_id || dbRow.property_id || "",
-                postDetails: dbRow.details || "",
-                businessType: dbRow.business_type || "",
-                use5: dbRow.use5 || ""
+                postId: dbRow.post_id || dbRow.property_id || dbRow.postId || "",
+                postDetails: dbRow.details || dbRow.postDetails || "",
+                businessType: dbRow.business_type || dbRow.businessType || ""
             };
         });
 
@@ -104,12 +102,13 @@ app.post('/api/properties', async (req, res) => {
         const targetLng = parseFloat(criteria.lng || criteria.longitude);
         const hasLocationFilter = !isNaN(targetLat) && !isNaN(targetLng);
 
-        // 2. กรองข้อมูลตามเงื่อนไข (Logic เดิม 100% อิงตามฝั่ง GAS)
+        // 2. กรองข้อมูลตามเงื่อนไข (เพิ่มความยืดหยุ่น ป้องกันค่าว่างกรองทิ้ง)
         let allFilteredResults = rawResults.filter(item => {
             let match = true;
-            const fullText = Object.values(item).map(v => v ? String(v).toLowerCase() : '').join(' ');
 
+            // ถ้ามีคำค้นหาแบบพิมพ์ข้อความอิสระ (Search Text)
             if (searchText && searchText.trim() !== "") {
+                const fullText = Object.values(item).map(v => v ? String(v).toLowerCase() : '').join(' ');
                 const keywords = searchText.trim().toLowerCase().split(/\s+/);
                 for (let kw of keywords) {
                     if (!fullText.includes(kw)) {
@@ -119,50 +118,57 @@ app.post('/api/properties', async (req, res) => {
                 }
             }
 
+            // กรองตาม Dropdown Criteria เฉพาะเมื่อผู้ใช้เลือกค่าส่งมาจริงๆ เท่านั้น
             if (match && criteria && typeof criteria === 'object') {
                 const provVal = criteria.province || criteria["จังหวัด"];
-                if (provVal && item.province && !item.province.toLowerCase().includes(String(provVal).toLowerCase())) match = false;
+                if (provVal && provVal !== "" && provVal !== "ทั้งหมด") {
+                    if (!item.province || !item.province.toLowerCase().includes(String(provVal).toLowerCase())) match = false;
+                }
 
                 const distVal = criteria.district || criteria["เขต/อำเภอ"];
-                if (distVal && item.district && !item.district.toLowerCase().includes(String(distVal).toLowerCase())) match = false;
+                if (distVal && distVal !== "" && distVal !== "ทั้งหมด") {
+                    if (!item.district || !item.district.toLowerCase().includes(String(distVal).toLowerCase())) match = false;
+                }
 
                 const roadVal = criteria.road || criteria["ถนน"];
-                if (roadVal && item.road && !item.road.toLowerCase().includes(String(roadVal).toLowerCase())) match = false;
+                if (roadVal && roadVal !== "" && roadVal !== "ทั้งหมด") {
+                    if (!item.road || !item.road.toLowerCase().includes(String(roadVal).toLowerCase())) match = false;
+                }
 
                 const typeVal = criteria.propertyType || criteria["คอนโด/บ้าน"] || criteria["ประเภทอสังหา"];
-                if (typeVal && item.propertyType && !item.propertyType.toLowerCase().includes(String(typeVal).toLowerCase())) match = false;
+                if (typeVal && typeVal !== "" && typeVal !== "ทั้งหมด") {
+                    if (!item.propertyType || !item.propertyType.toLowerCase().includes(String(typeVal).toLowerCase())) match = false;
+                }
 
                 const projVal = criteria.project || criteria["โครงการ"];
-                if (projVal && item.project && !item.project.toLowerCase().includes(String(projVal).toLowerCase())) match = false;
+                if (projVal && projVal !== "" && projVal !== "ทั้งหมด") {
+                    if (!item.project || !item.project.toLowerCase().includes(String(projVal).toLowerCase())) match = false;
+                }
 
                 const priceTypeVal = criteria.priceType || criteria["ขาย/เช่า"] || criteria["แบบราคา"];
-                if (priceTypeVal && item.priceType && !item.priceType.toLowerCase().includes(String(priceTypeVal).toLowerCase())) match = false;
+                if (priceTypeVal && priceTypeVal !== "" && priceTypeVal !== "ทั้งหมด") {
+                    if (!item.priceType || !item.priceType.toLowerCase().includes(String(priceTypeVal).toLowerCase())) match = false;
+                }
 
-                const priceSaleVal = criteria.priceSale || criteria["ราคาขาย"];
+                // กรองราคาขาย
                 const priceSaleMinVal = criteria.priceSaleMin;
+                const priceSaleMaxVal = criteria.priceSale || criteria["ราคาขาย"];
                 if (priceSaleMinVal) {
                     const minP = parseInt(String(priceSaleMinVal).replace(/[^0-9]/g, ''), 10);
                     if (!isNaN(minP)) {
                         const itemP = parseInt(String(item.salePrice).replace(/[^0-9]/g, ''), 10) || 0;
                         if (itemP < minP) match = false;
                     }
-                } else if (priceSaleVal) {
-                    const maxP = parseInt(String(priceSaleVal).replace(/[^0-9]/g, ''), 10);
+                }
+                if (priceSaleMaxVal && priceSaleMaxVal !== "") {
+                    const maxP = parseInt(String(priceSaleMaxVal).replace(/[^0-9]/g, ''), 10);
                     if (!isNaN(maxP)) {
                         const itemP = parseInt(String(item.salePrice).replace(/[^0-9]/g, ''), 10) || 0;
-                        if (itemP > maxP) match = false;
+                        if (itemP > maxP && itemP > 0) match = false;
                     }
                 }
 
-                const priceRentVal = criteria.priceRent || criteria["ราคาเช่า"];
-                if (priceRentVal) {
-                    const maxPRent = parseInt(String(priceRentVal).replace(/[^0-9]/g, ''), 10);
-                    if (!isNaN(maxPRent)) {
-                        const itemPRent = parseInt(String(item.rentPrice).replace(/[^0-9]/g, ''), 10) || 0;
-                        if (itemPRent > maxPRent) match = false;
-                    }
-                }
-
+                // กรองพื้นที่ (Area)
                 const areaMaxVal = criteria.areaMax;
                 const areaMinVal = criteria.areaMin;
                 if (areaMinVal || areaMaxVal) {
@@ -174,7 +180,7 @@ app.post('/api/properties', async (req, res) => {
                     }
                 }
 
-                // รัศมีพิกัด (Radius Search)
+                // รัศมีพิกัด (Radius Search) - ทำงานเฉพาะเมื่อกดปุ่มค้นหาพิกัด
                 if (hasLocationFilter) {
                     const itemLat = parseFloat(item.latitude);
                     const itemLng = parseFloat(item.longitude);
@@ -191,7 +197,7 @@ app.post('/api/properties', async (req, res) => {
             return match;
         });
 
-        // 3. เรียงลำดับระยะทาง และตัดแบ่งหน้า
+        // 3. เรียงลำดับระยะทาง (ถ้ามีพิกัด) หรือเรียงตามปกติ
         if (hasLocationFilter) {
             allFilteredResults.sort((a, b) => (a._distance || 0) - (b._distance || 0));
         }
