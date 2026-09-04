@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { WebSocketServer, WebSocket } = require('ws');
 const { Pool } = require('pg');
+const cors = require('cors');
 
 const PORT = process.env.PORT || 8080;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -13,6 +14,14 @@ if (!GEMINI_API_KEY) {
 
 // 1. สร้าง Express และ HTTP Server เพื่อรองรับทั้ง HTTP Route (แก้ปัญหา Upgrade Required) และ WebSocket
 const app = express();
+
+// เปิดใช้งาน CORS สำหรับโดเมน GitHub Pages และ Localhost
+app.use(cors({
+    origin: ['https://pongpanodserm3-ux.github.io', 'http://localhost:3000'],
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 const server = http.createServer(app);
 
 // HTTP Route พื้นฐาน สำหรับเช็กสถานะเซิร์ฟเวอร์
