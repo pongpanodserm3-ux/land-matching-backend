@@ -32,11 +32,10 @@ app.get('/', (req, res) => {
     res.status(200).send('Land Matching Backend Server is running successfully! 🚀');
 });
 
-// เปลี่ยนเป็น app.post เพื่อรองรับฟังก์ชัน fetchDatabase จากหน้าเว็บ
+// ดึงข้อมูลจาก public.properties และเรียงลำดับตาม property_id
 app.post('/api/properties', async (req, res) => {
     try {
-        // ดึงข้อมูลจากตาราง properties ใน Supabase
-        const result = await pool.query('SELECT * FROM properties;');
+        const result = await pool.query('SELECT * FROM public.properties ORDER BY property_id ASC;');
         res.status(200).json({ success: true, data: result.rows });
     } catch (error) {
         console.error('Error fetching properties:', error);
