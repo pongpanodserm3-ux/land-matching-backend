@@ -32,14 +32,16 @@ app.get('/', (req, res) => {
     res.status(200).send('Land Matching Backend Server is running successfully! 🚀');
 });
 
-// ดึงข้อมูลจาก public.properties และเรียงลำดับตาม property_id
+// API สำหรับดึงข้อมูล properties พร้อมเก็บบันทึก Error ละเอียด
 app.post('/api/properties', async (req, res) => {
     try {
+        console.log('📥 Received request to fetch properties...');
         const result = await pool.query('SELECT * FROM public.properties ORDER BY property_id ASC;');
-        // ส่ง Array ของข้อมูลกลับไปตรงๆ ให้หน้าเว็บใช้งานได้ทันที
+        console.log(`✅ Fetched ${result.rows.length} rows successfully from Supabase.`);
         res.status(200).json(result.rows);
     } catch (error) {
-        console.error('Error fetching properties:', error);
+        console.error('❌ Detailed Error fetching properties:', error.message);
+        console.error(error.stack);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -70,7 +72,7 @@ pool.connect((err, client, release) => {
     }
 });
 
-// 3. คงโครงสร้าง WebSocketServer เดิมของคุณไว้ทั้งหมด[cite: 3]
+// 3. คงโครงสร้าง WebSocketServer เดิมของคุณไว้ทั้งหมด
 const wss = new WebSocketServer({ server });
 
 wss.on('connection', (clientSocket) => {
@@ -126,7 +128,7 @@ wss.on('connection', (clientSocket) => {
     });
 });
 
-// 4. รันเซิร์ฟเวอร์[cite: 3]
+// 4. รันเซิร์ฟเวอร์
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Backend Server running on port ${PORT}`);
 });
