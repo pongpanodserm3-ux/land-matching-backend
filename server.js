@@ -12,6 +12,19 @@ if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
+// ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
+function getDistanceInKm(lat1, lon1, lat2, lon2) {
+    const R = 6371; // รัศมีโลก (กม.)
+    const dLat = (lat2 - lat1) * (Math.PI / 180);
+    const dLon = (lon2 - lon1) * (Math.PI / 180);
+    const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+}
+
 // 1. สร้าง Express และ HTTP Server
 const app = express();
 
@@ -32,14 +45,19 @@ app.get('/', (req, res) => {
     res.status(200).send('Land Matching Backend Server is running successfully! 🚀');
 });
 
-// ดึงข้อมูลจาก public.properties และรองรับการค้นหาตามเงื่อนไข / ลิสต์บ้านวันล่าสุด Line35-121
 // ดึงข้อมูลจาก public.properties และรองรับการค้นหาตามเงื่อนไข / ลิสต์บ้านวันล่าสุด
 app.post('/api/properties', async (req, res) => {
     try {
-        const offset = req.body.offset || 0;
-        const limit = req.body.limit || 10;
+        const offset = parseInt(req.body.offset || 0, 10);
+        const limit = parseInt(req.body.limit || 10, 10);
         const rawCriteria = req.body.criteria || {};
         const searchText = (req.body.searchText || "").trim();
+
+        // ดึงค่าพิกัดละติจูด ลองติจูด และรัศมีจาก criteria
+        const targetLat = parseFloat(rawCriteria.lat !== undefined ? rawCriteria.lat : rawCriteria.latitude);
+        const targetLng = parseFloat(rawCriteria.lng !== undefined ? rawCriteria.lng : rawCriteria.longitude);
+        const radiusKm = !isNaN(parseFloat(rawCriteria.radius)) ? parseFloat(rawCriteria.radius) : 1;
+        const hasLocationFilter = !isNaN(targetLat) && !isNaN(targetLng);
 
         // รายการข้อความที่เป็น "หัวข้อปุ่ม Dropdown" ให้ตัดทิ้ง ไม่นำมากรอง
         const defaultLabels = ["พิกัด", "ขาย/เช่า", "คอนโด/บ้าน", "ราคาขาย", "ราคาเช่า", "ทั้งหมด", "เลือกจังหวัด", "เลือกอำเภอ", "เลือกถนน", "เลือกโครงการ"];
@@ -47,6 +65,7 @@ app.post('/api/properties', async (req, res) => {
         // กรองเอาเฉพาะเงื่อนไขที่ผู้ใช้เลือกใช้งานจริงๆ
         const criteria = {};
         for (const [key, val] of Object.entries(rawCriteria)) {
+            if (["lat", "lng", "latitude", "longitude", "radius"].includes(key)) continue;
             if (val && typeof val === 'string' && !defaultLabels.includes(val.trim())) {
                 criteria[key] = val.trim();
             }
@@ -58,7 +77,28 @@ app.post('/api/properties', async (req, res) => {
         let queryStr = "";
         let queryParams = [];
 
-        if (!hasCriteria && !hasSearchText) {
+        let whereClauses = [];
+        let paramIndex = 1;
+
+        if (hasSearchText) {
+            const keywords = searchText.split(/\s+/);
+            keywords.forEach(kw => {
+                whereClauses.push(`(facebook_name ILIKE $${paramIndex} OR project ILIKE $${paramIndex} OR property_type ILIKE $${paramIndex} OR province ILIKE $${paramIndex} OR district ILIKE $${paramIndex} OR road ILIKE $${paramIndex} OR details ILIKE $${paramIndex})`);
+                queryParams.push(`%${kw}%`);
+                paramIndex++;
+            });
+        }
+
+        if (criteria.province) { whereClauses.push(`province ILIKE $${paramIndex}`); queryParams.push(`%${criteria.province}%`); paramIndex++; }
+        if (criteria.district) { whereClauses.push(`district ILIKE $${paramIndex}`); queryParams.push(`%${criteria.district}%`); paramIndex++; }
+        if (criteria.road) { whereClauses.push(`road ILIKE $${paramIndex}`); queryParams.push(`%${criteria.road}%`); paramIndex++; }
+        if (criteria.propertyType) { whereClauses.push(`property_type ILIKE $${paramIndex}`); queryParams.push(`%${criteria.propertyType}%`); paramIndex++; }
+        if (criteria.project) { whereClauses.push(`project ILIKE $${paramIndex}`); queryParams.push(`%${criteria.project}%`); paramIndex++; }
+        if (criteria.priceType) { whereClauses.push(`price_type ILIKE $${paramIndex}`); queryParams.push(`%${criteria.priceType}%`); paramIndex++; }
+
+        let whereSQL = whereClauses.length > 0 ? "WHERE " + whereClauses.join(" AND ") : "";
+
+        if (!hasCriteria && !hasSearchText && !hasLocationFilter) {
             // โลจิกที่ 1: ไม่มีตัวกรองใดๆ ให้ดึงรายการบ้านของวันอัปเดตล่าสุด
             const latestDateResult = await pool.query(`SELECT MAX(date) as max_date FROM public.properties WHERE date IS NOT NULL AND date != ''`);
             const maxDate = latestDateResult.rows[0]?.max_date;
@@ -70,42 +110,48 @@ app.post('/api/properties', async (req, res) => {
                 queryStr = `SELECT * FROM public.properties ORDER BY property_id ASC LIMIT $1 OFFSET $2;`;
                 queryParams = [limit, offset];
             }
+        } else if (hasLocationFilter) {
+            // โลจิกค้นหาด้วยพิกัด/รัศมี: ดึงรายการที่ตรงตามเงื่อนไขข้อความทั้งหมดมาก่อนเพื่อมาคำนวณระยะทาง
+            queryStr = `SELECT * FROM public.properties ${whereSQL} ORDER BY property_id ASC;`;
         } else {
-            // โลจิกที่ 2: มีการเลือกตัวกรองจริง หรือพิมพ์ช่องค้นหา
-            let whereClauses = [];
-            let paramIndex = 1;
-
-            if (hasSearchText) {
-                const keywords = searchText.split(/\s+/);
-                keywords.forEach(kw => {
-                    whereClauses.push(`(facebook_name ILIKE $${paramIndex} OR project ILIKE $${paramIndex} OR property_type ILIKE $${paramIndex} OR province ILIKE $${paramIndex} OR district ILIKE $${paramIndex} OR road ILIKE $${paramIndex} OR details ILIKE $${paramIndex})`);
-                    queryParams.push(`%${kw}%`);
-                    paramIndex++;
-                });
-            }
-
-            if (criteria.province) { whereClauses.push(`province ILIKE $${paramIndex}`); queryParams.push(`%${criteria.province}%`); paramIndex++; }
-            if (criteria.district) { whereClauses.push(`district ILIKE $${paramIndex}`); queryParams.push(`%${criteria.district}%`); paramIndex++; }
-            if (criteria.road) { whereClauses.push(`road ILIKE $${paramIndex}`); queryParams.push(`%${criteria.road}%`); paramIndex++; }
-            if (criteria.propertyType) { whereClauses.push(`property_type ILIKE $${paramIndex}`); queryParams.push(`%${criteria.propertyType}%`); paramIndex++; }
-            if (criteria.project) { whereClauses.push(`project ILIKE $${paramIndex}`); queryParams.push(`%${criteria.project}%`); paramIndex++; }
-            if (criteria.priceType) { whereClauses.push(`price_type ILIKE $${paramIndex}`); queryParams.push(`%${criteria.priceType}%`); paramIndex++; }
-
-            let whereSQL = whereClauses.length > 0 ? "WHERE " + whereClauses.join(" AND ") : "";
-
+            // โลจิกที่ 2: มีการเลือกตัวกรองปกติ
             queryStr = `SELECT * FROM public.properties ${whereSQL} ORDER BY property_id ASC LIMIT $${paramIndex} OFFSET $${paramIndex+1};`;
             queryParams.push(limit, offset);
         }
 
         const result = await pool.query(queryStr, queryParams);
-        
-        const mappedResults = result.rows.map(row => ({
+        let rows = result.rows;
+
+        // หากมีการกรองด้วยพิกัดและรัศมี (Haversine Filter)
+        if (hasLocationFilter) {
+            rows = rows.filter(row => {
+                const itemLat = parseFloat(row.latitude || row.lat || row.use_lat || row.use);
+                const itemLng = parseFloat(row.longitude || row.lng || row.use2_lng || row.use2);
+
+                if (!isNaN(itemLat) && !isNaN(itemLng)) {
+                    const distKm = getDistanceInKm(targetLat, targetLng, itemLat, itemLng);
+                    row._distance = distKm;
+                    return distKm <= radiusKm;
+                }
+                return false;
+            });
+
+            // เรียงลำดับอสังหาริมทรัพย์จากระยะทางที่ใกล้ศูนย์กลางพิกัดมากที่สุดขึ้นก่อน
+            rows.sort((a, b) => (a._distance || 0) - (b._distance || 0));
+
+            // ทำ Pagination บน Memory สำหรับผลลัพธ์ที่กรองรัศมีแล้ว
+            rows = rows.slice(offset, offset + limit);
+        }
+
+        const mappedResults = rows.map(row => ({
             ...row,
             postId: row.post_id || row.property_id || "",
             salePrice: row.price_sell || row.price || "",
             rentPrice: row.price_rent || "",
             facebookPostName: row.facebook_name || "",
-            postDetails: row.details || ""
+            postDetails: row.details || "",
+            latitude: row.latitude || row.lat || row.use_lat || row.use || "",
+            longitude: row.longitude || row.lng || row.use2_lng || row.use2 || ""
         }));
 
         res.status(200).json({
