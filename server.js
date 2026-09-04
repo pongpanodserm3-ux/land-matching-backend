@@ -12,7 +12,7 @@ if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
-// 1. สร้าง Express และ HTTP Server เพื่อรองรับทั้ง HTTP Route (แก้ปัญหา Upgrade Required) และ WebSocket
+// 1. สร้าง Express และ HTTP Server
 const app = express();
 
 // เปิดใช้งาน CORS สำหรับโดเมน GitHub Pages และ Localhost
@@ -22,6 +22,9 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// รองรับการแปลง JSON body สำหรับ POST request
+app.use(express.json());
+
 const server = http.createServer(app);
 
 // HTTP Route พื้นฐาน สำหรับเช็กสถานะเซิร์ฟเวอร์
@@ -29,25 +32,25 @@ app.get('/', (req, res) => {
     res.status(200).send('Land Matching Backend Server is running successfully! 🚀');
 });
 
-// ตัวอย่าง API สำหรับเชื่อมต่อฐานข้อมูล Supabase (10 ตาราง)
+// เปลี่ยนเป็น app.post เพื่อรองรับฟังก์ชัน fetchDatabase จากหน้าเว็บ
+app.post('/api/properties', async (req, res) => {
+    try {
+        // ดึงข้อมูลจากตาราง properties ใน Supabase
+        const result = await pool.query('SELECT * FROM properties;');
+        res.status(200).json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error('Error fetching properties:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// ตัวอย่าง API สำหรับเชื่อมต่อฐานข้อมูล Supabase (users)
 app.get('/api/users', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM users LIMIT 10;');
         res.status(200).json({ success: true, data: result.rows });
     } catch (error) {
         console.error('Error fetching users:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-// API สำหรับดึงข้อมูล properties จากฐานข้อมูล Supabase
-app.get('/api/properties', async (req, res) => {
-    try {
-        // หมายเหตุ: เปลี่ยนชื่อตาราง 'properties' ให้ตรงกับชื่อตารางจริงใน Supabase ของคุณ
-        const result = await pool.query('SELECT * FROM properties;');
-        res.status(200).json({ success: true, data: result.rows });
-    } catch (error) {
-        console.error('Error fetching properties:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -67,7 +70,7 @@ pool.connect((err, client, release) => {
     }
 });
 
-// 3. คงโครงสร้าง WebSocketServer เดิมของคุณไว้ทั้งหมด
+// 3. คงโครงสร้าง WebSocketServer เดิมของคุณไว้ทั้งหมด[cite: 3]
 const wss = new WebSocketServer({ server });
 
 wss.on('connection', (clientSocket) => {
@@ -76,12 +79,10 @@ wss.on('connection', (clientSocket) => {
     const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
     const geminiSocket = new WebSocket(geminiUrl);
     
-    // 🛠️ สร้าง Queue ไว้เก็บข้อมูล (เช่น setupData) ในระหว่างที่ Gemini ยังเชื่อมต่อไม่เสร็จ
     const messageQueue = [];
 
     geminiSocket.on('open', () => {
         console.log('Connected to Gemini Live API');
-        // เมื่อ Gemini พร้อมแล้ว ให้ทยอยส่งข้อมูลที่ค้างอยู่ใน Queue ออกไปให้หมด
         while (messageQueue.length > 0) {
             const msg = messageQueue.shift();
             geminiSocket.send(msg);
@@ -90,11 +91,9 @@ wss.on('connection', (clientSocket) => {
 
     clientSocket.on('message', (message) => {
         const msgString = message.toString();
-        // ถ้า Gemini พร้อมแล้ว ส่งตรงได้เลย
         if (geminiSocket.readyState === WebSocket.OPEN) {
             geminiSocket.send(msgString);
         } else {
-            // ถ้ายังไม่พร้อม ให้เก็บใส่ Queue ไว้ก่อน ป้องกันข้อมูลสูญหาย
             messageQueue.push(msgString);
         }
     });
@@ -127,7 +126,7 @@ wss.on('connection', (clientSocket) => {
     });
 });
 
-// 4. เปลี่ยนมารันผ่าน server.listen และผูกกับ '0.0.0.0' เพื่อให้ Render ทำงานได้อย่างสมบูรณ์
+// 4. รันเซิร์ฟเวอร์[cite: 3]
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Backend Server running on port ${PORT}`);
 });
