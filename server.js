@@ -59,7 +59,7 @@ function parseAreaToSqWah(sizeStr) {
     return totalSqWah;
 }
 
-// API สำหรับรับเงื่อนไขและดึงข้อมูลจาก Supabase Line62-222
+// API สำหรับรับเงื่อนไขและดึงข้อมูลจาก Supabase Line62-231
 app.post('/api/properties', async (req, res) => {
     try {
         const offset = parseInt(req.body.offset || 0, 10);
@@ -67,13 +67,13 @@ app.post('/api/properties', async (req, res) => {
         const criteria = req.body.criteria || {};
         const searchText = req.body.searchText || "";
         
-        // 1. ดึงข้อมูลจาก Supabase
-        const result = await pool.query('SELECT * FROM public.properties ORDER BY property_id ASC;');
+        // 1. ดึงข้อมูลจาก Supabase (เรียงจากใหม่ไปเก่า โดยดูจาก property_id หรือ id ล่าสุดลงมา)
+        // หมายเหตุ: หากในตารางใช้คอลัมน์อื่นเช่น created_at สามารถเปลี่ยนตรง ORDER BY ได้ครับ
+        const result = await pool.query('SELECT * FROM public.properties ORDER BY property_id DESC;');
         
         let rawResults = result.rows.map(dbRow => {
             return {
                 ...dbRow,
-                // ตรวจสอบชื่อฟิลด์จาก Database ให้ครอบคลุมทั้งตัวพิมพ์เล็กและใหญ่
                 facebookPostName: dbRow.facebook_name || dbRow.facebookPostName || "",
                 project: dbRow.project || dbRow.Project || "",
                 propertyType: dbRow.property_type || dbRow.propertyType || "",
@@ -102,12 +102,20 @@ app.post('/api/properties', async (req, res) => {
         const targetLng = parseFloat(criteria.lng || criteria.longitude);
         const hasLocationFilter = !isNaN(targetLat) && !isNaN(targetLng);
 
-        // 2. กรองข้อมูลตามเงื่อนไข (เพิ่มความยืดหยุ่น ป้องกันค่าว่างกรองทิ้ง)
+        // เช็กว่ามีการระบุเงื่อนไขอะไรมาบ้างหรือไม่ (ถ้าไม่มีเลย จะปล่อยผ่านเพื่อให้แสดงรายการล่าสุดทั้งหมด)
+        const hasCriteria = criteria && typeof criteria === 'object' && Object.values(criteria).some(val => val !== undefined && val !== null && val !== "" && val !== "ทั้งหมด");
+        const hasSearchText = searchText && searchText.trim() !== "";
+
+        // 2. กรองข้อมูลเฉพาะเมื่อมีการใส่เงื่อนไข หรือ ค้นหาข้อความเท่านั้น
         let allFilteredResults = rawResults.filter(item => {
+            if (!hasCriteria && !hasSearchText && !hasLocationFilter) {
+                return true; // ถ้าไม่มีเงื่อนไขใดๆ เลย ให้ดึงแสดงทั้งหมด (ซึ่งถูกเรียงใหม่ล่าสุดไว้แล้ว)
+            }
+
             let match = true;
 
-            // ถ้ามีคำค้นหาแบบพิมพ์ข้อความอิสระ (Search Text)
-            if (searchText && searchText.trim() !== "") {
+            // กรองตามข้อความค้นหา (Search Text)
+            if (hasSearchText) {
                 const fullText = Object.values(item).map(v => v ? String(v).toLowerCase() : '').join(' ');
                 const keywords = searchText.trim().toLowerCase().split(/\s+/);
                 for (let kw of keywords) {
@@ -118,8 +126,8 @@ app.post('/api/properties', async (req, res) => {
                 }
             }
 
-            // กรองตาม Dropdown Criteria เฉพาะเมื่อผู้ใช้เลือกค่าส่งมาจริงๆ เท่านั้น
-            if (match && criteria && typeof criteria === 'object') {
+            // กรองตาม Dropdown Criteria
+            if (match && hasCriteria) {
                 const provVal = criteria.province || criteria["จังหวัด"];
                 if (provVal && provVal !== "" && provVal !== "ทั้งหมด") {
                     if (!item.province || !item.province.toLowerCase().includes(String(provVal).toLowerCase())) match = false;
@@ -179,25 +187,26 @@ app.post('/api/properties', async (req, res) => {
                         if (areaMaxVal && itemSqWah > parseFloat(areaMaxVal)) match = false;
                     }
                 }
+            }
 
-                // รัศมีพิกัด (Radius Search) - ทำงานเฉพาะเมื่อกดปุ่มค้นหาพิกัด
-                if (hasLocationFilter) {
-                    const itemLat = parseFloat(item.latitude);
-                    const itemLng = parseFloat(item.longitude);
-                    if (!isNaN(itemLat) && !isNaN(itemLng)) {
-                        const distKm = getDistanceInKm(targetLat, targetLng, itemLat, itemLng);
-                        item._distance = distKm;
-                        const maxRadiusKm = !isNaN(parseFloat(criteria.radius)) ? parseFloat(criteria.radius) : 1;
-                        if (distKm > maxRadiusKm) match = false;
-                    } else {
-                        match = false; 
-                    }
+            // รัศมีพิกัด (Radius Search)
+            if (match && hasLocationFilter) {
+                const itemLat = parseFloat(item.latitude);
+                const itemLng = parseFloat(item.longitude);
+                if (!isNaN(itemLat) && !isNaN(itemLng)) {
+                    const distKm = getDistanceInKm(targetLat, targetLng, itemLat, itemLng);
+                    item._distance = distKm;
+                    const maxRadiusKm = !isNaN(parseFloat(criteria.radius)) ? parseFloat(criteria.radius) : 1;
+                    if (distKm > maxRadiusKm) match = false;
+                } else {
+                    match = false; 
                 }
             }
+
             return match;
         });
 
-        // 3. เรียงลำดับระยะทาง (ถ้ามีพิกัด) หรือเรียงตามปกติ
+        // 3. จัดเรียงผลลัพธ์
         if (hasLocationFilter) {
             allFilteredResults.sort((a, b) => (a._distance || 0) - (b._distance || 0));
         }
