@@ -40,6 +40,18 @@ app.get('/api/users', async (req, res) => {
     }
 });
 
+// API สำหรับดึงข้อมูล properties จากฐานข้อมูล Supabase
+app.get('/api/properties', async (req, res) => {
+    try {
+        // หมายเหตุ: เปลี่ยนชื่อตาราง 'properties' ให้ตรงกับชื่อตารางจริงใน Supabase ของคุณ
+        const result = await pool.query('SELECT * FROM properties;');
+        res.status(200).json({ success: true, data: result.rows });
+    } catch (error) {
+        console.error('Error fetching properties:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // 2. เชื่อมต่อฐานข้อมูล PostgreSQL บน Supabase
 const pool = new Pool({
     connectionString: DATABASE_URL,
