@@ -32,24 +32,34 @@ app.get('/', (req, res) => {
     res.status(200).send('Land Matching Backend Server is running successfully! 🚀');
 });
 
-// ดึงข้อมูลจาก public.properties และรองรับการค้นหาตามเงื่อนไข / ลิสต์บ้านวันล่าสุด Line35-117
+// ดึงข้อมูลจาก public.properties และรองรับการค้นหาตามเงื่อนไข / ลิสต์บ้านวันล่าสุด Line35-121
+// ดึงข้อมูลจาก public.properties และรองรับการค้นหาตามเงื่อนไข / ลิสต์บ้านวันล่าสุด
 app.post('/api/properties', async (req, res) => {
     try {
-        // รับค่าข้อมูลที่ส่งมาจาก Frontend
         const offset = req.body.offset || 0;
         const limit = req.body.limit || 10;
-        const criteria = req.body.criteria || {};
-        const searchText = req.body.searchText || "";
+        const rawCriteria = req.body.criteria || {};
+        const searchText = (req.body.searchText || "").trim();
 
-        // เช็คว่ามีการเลือก dropdown หรือพิมพ์ค้นหาหรือไม่
+        // รายการข้อความที่เป็น "หัวข้อปุ่ม Dropdown" ให้ตัดทิ้ง ไม่นำมากรอง
+        const defaultLabels = ["พิกัด", "ขาย/เช่า", "คอนโด/บ้าน", "ราคาขาย", "ราคาเช่า", "ทั้งหมด", "เลือกจังหวัด", "เลือกอำเภอ", "เลือกถนน", "เลือกโครงการ"];
+
+        // กรองเอาเฉพาะเงื่อนไขที่ผู้ใช้เลือกใช้งานจริงๆ
+        const criteria = {};
+        for (const [key, val] of Object.entries(rawCriteria)) {
+            if (val && typeof val === 'string' && !defaultLabels.includes(val.trim())) {
+                criteria[key] = val.trim();
+            }
+        }
+
         const hasCriteria = Object.keys(criteria).length > 0;
-        const hasSearchText = searchText.trim() !== "";
+        const hasSearchText = searchText !== "";
 
         let queryStr = "";
         let queryParams = [];
 
         if (!hasCriteria && !hasSearchText) {
-            // โลจิกที่ 1: ไม่มีการเลือกเงื่อนไขใดๆ ให้แสดงลิสต์บ้านตามวันอัปเดตล่าสุด
+            // โลจิกที่ 1: ไม่มีตัวกรองใดๆ ให้ดึงรายการบ้านของวันอัปเดตล่าสุด
             const latestDateResult = await pool.query(`SELECT MAX(date) as max_date FROM public.properties WHERE date IS NOT NULL AND date != ''`);
             const maxDate = latestDateResult.rows[0]?.max_date;
 
@@ -57,18 +67,16 @@ app.post('/api/properties', async (req, res) => {
                 queryStr = `SELECT * FROM public.properties WHERE date = $1 ORDER BY property_id ASC LIMIT $2 OFFSET $3;`;
                 queryParams = [maxDate, limit, offset];
             } else {
-                // เผื่อกรณีฐานข้อมูลไม่มีคอลัมน์ date หรือว่างเปล่า
                 queryStr = `SELECT * FROM public.properties ORDER BY property_id ASC LIMIT $1 OFFSET $2;`;
                 queryParams = [limit, offset];
             }
         } else {
-            // โลจิกที่ 2: มีการเลือก Dropdown หรือพิมพ์ข้อความ ให้นำมาสร้างเงื่อนไข (Dynamic Query)
+            // โลจิกที่ 2: มีการเลือกตัวกรองจริง หรือพิมพ์ช่องค้นหา
             let whereClauses = [];
             let paramIndex = 1;
 
-            // ตรวจสอบช่องพิมพ์ข้อความอิสระ (พิมพ์ที่ต้องการ)
             if (hasSearchText) {
-                const keywords = searchText.trim().split(/\s+/);
+                const keywords = searchText.split(/\s+/);
                 keywords.forEach(kw => {
                     whereClauses.push(`(facebook_name ILIKE $${paramIndex} OR project ILIKE $${paramIndex} OR property_type ILIKE $${paramIndex} OR province ILIKE $${paramIndex} OR district ILIKE $${paramIndex} OR road ILIKE $${paramIndex} OR details ILIKE $${paramIndex})`);
                     queryParams.push(`%${kw}%`);
@@ -76,24 +84,21 @@ app.post('/api/properties', async (req, res) => {
                 });
             }
 
-            // ตรวจสอบ Dropdown (นำเฉพาะเงื่อนไขที่ถูกเลือกมาต่อรวมกัน)
             if (criteria.province) { whereClauses.push(`province ILIKE $${paramIndex}`); queryParams.push(`%${criteria.province}%`); paramIndex++; }
             if (criteria.district) { whereClauses.push(`district ILIKE $${paramIndex}`); queryParams.push(`%${criteria.district}%`); paramIndex++; }
             if (criteria.road) { whereClauses.push(`road ILIKE $${paramIndex}`); queryParams.push(`%${criteria.road}%`); paramIndex++; }
             if (criteria.propertyType) { whereClauses.push(`property_type ILIKE $${paramIndex}`); queryParams.push(`%${criteria.propertyType}%`); paramIndex++; }
             if (criteria.project) { whereClauses.push(`project ILIKE $${paramIndex}`); queryParams.push(`%${criteria.project}%`); paramIndex++; }
             if (criteria.priceType) { whereClauses.push(`price_type ILIKE $${paramIndex}`); queryParams.push(`%${criteria.priceType}%`); paramIndex++; }
-            
+
             let whereSQL = whereClauses.length > 0 ? "WHERE " + whereClauses.join(" AND ") : "";
 
             queryStr = `SELECT * FROM public.properties ${whereSQL} ORDER BY property_id ASC LIMIT $${paramIndex} OFFSET $${paramIndex+1};`;
             queryParams.push(limit, offset);
         }
 
-        // ดึงข้อมูลจากฐานข้อมูล
         const result = await pool.query(queryStr, queryParams);
         
-        // แปลงชื่อคอลัมน์ (snake_case) ให้ตรงกับตัวแปรที่หน้าเว็บเรียกใช้ (camelCase)
         const mappedResults = result.rows.map(row => ({
             ...row,
             postId: row.post_id || row.property_id || "",
@@ -103,7 +108,6 @@ app.post('/api/properties', async (req, res) => {
             postDetails: row.details || ""
         }));
 
-        // จัด Format กลับไปในรูปแบบที่ไฟล์ Frontend คาดหวัง
         res.status(200).json({
             status: 'success',
             results: mappedResults,
