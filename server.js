@@ -57,10 +57,18 @@ app.post('/api/properties', async (req, res) => {
         const targetLat = parseFloat(rawCriteria.lat !== undefined ? rawCriteria.lat : rawCriteria.latitude);
         const targetLng = parseFloat(rawCriteria.lng !== undefined ? rawCriteria.lng : rawCriteria.longitude);
         const radiusKm = !isNaN(parseFloat(rawCriteria.radius)) ? parseFloat(rawCriteria.radius) : 1;
+        
         const hasLocationFilter = !isNaN(targetLat) && !isNaN(targetLng);
+        const hasComplexFilter = rawCriteria.priceSale || rawCriteria.priceRent || rawCriteria.areaMax;
+        const needsMemoryPagination = hasLocationFilter || hasComplexFilter;
 
         // รายการข้อความที่เป็น "หัวข้อปุ่ม Dropdown" ให้ตัดทิ้ง ไม่นำมากรอง
-        const defaultLabels = ["พิกัด", "ขาย/เช่า", "คอนโด/บ้าน", "ราคาขาย", "ราคาเช่า", "ทั้งหมด", "เลือกจังหวัด", "เลือกอำเภอ", "เลือกถนน", "เลือกโครงการ"];
+        const defaultLabels = [
+            "พิกัด", "ขาย/เช่า", "คอนโด/บ้าน", "ราคาขาย", "ราคาเช่า", "ทั้งหมด", 
+            "เลือกจังหวัด", "เลือกอำเภอ", "เลือกถนน", "เลือกโครงการ", "จังหวัด", 
+            "เขต/อำเภอ", "ถนน", "โครงการ", "ซอย", "เนื้อที่", "ขนาด", "ปรับขนาด", 
+            "อื่นๆ", "สถานที่ใกล้เคียง", "สาธารณูปโภคพิเศษ"
+        ];
 
         // กรองเอาเฉพาะเงื่อนไขที่ผู้ใช้เลือกใช้งานจริงๆ
         const criteria = {};
@@ -89,16 +97,23 @@ app.post('/api/properties', async (req, res) => {
             });
         }
 
+        // นำเงื่อนไข Dropdown มาเข้า SQL WHERE 
         if (criteria.province) { whereClauses.push(`province ILIKE $${paramIndex}`); queryParams.push(`%${criteria.province}%`); paramIndex++; }
         if (criteria.district) { whereClauses.push(`district ILIKE $${paramIndex}`); queryParams.push(`%${criteria.district}%`); paramIndex++; }
         if (criteria.road) { whereClauses.push(`road ILIKE $${paramIndex}`); queryParams.push(`%${criteria.road}%`); paramIndex++; }
         if (criteria.propertyType) { whereClauses.push(`property_type ILIKE $${paramIndex}`); queryParams.push(`%${criteria.propertyType}%`); paramIndex++; }
         if (criteria.project) { whereClauses.push(`project ILIKE $${paramIndex}`); queryParams.push(`%${criteria.project}%`); paramIndex++; }
         if (criteria.priceType) { whereClauses.push(`price_type ILIKE $${paramIndex}`); queryParams.push(`%${criteria.priceType}%`); paramIndex++; }
+        
+        // เพิ่มเงื่อนไข Dropdown ใหม่ให้ครอบคลุม
+        if (criteria.soi) { whereClauses.push(`details ILIKE $${paramIndex}`); queryParams.push(`%${criteria.soi}%`); paramIndex++; }
+        if (criteria.other) { whereClauses.push(`details ILIKE $${paramIndex}`); queryParams.push(`%${criteria.other}%`); paramIndex++; }
+        if (criteria.nearby) { whereClauses.push(`details ILIKE $${paramIndex}`); queryParams.push(`%${criteria.nearby}%`); paramIndex++; }
+        if (criteria.facility) { whereClauses.push(`details ILIKE $${paramIndex}`); queryParams.push(`%${criteria.facility}%`); paramIndex++; }
 
         let whereSQL = whereClauses.length > 0 ? "WHERE " + whereClauses.join(" AND ") : "";
 
-        if (!hasCriteria && !hasSearchText && !hasLocationFilter) {
+        if (!hasCriteria && !hasSearchText && !needsMemoryPagination) {
             // โลจิกที่ 1: ไม่มีตัวกรองใดๆ ให้ดึงรายการบ้านของวันอัปเดตล่าสุด
             const latestDateResult = await pool.query(`SELECT MAX(date) as max_date FROM public.properties WHERE date IS NOT NULL AND date != ''`);
             const maxDate = latestDateResult.rows[0]?.max_date;
@@ -110,8 +125,8 @@ app.post('/api/properties', async (req, res) => {
                 queryStr = `SELECT * FROM public.properties ORDER BY property_id ASC LIMIT $1 OFFSET $2;`;
                 queryParams = [limit, offset];
             }
-        } else if (hasLocationFilter) {
-            // โลจิกค้นหาด้วยพิกัด/รัศมี: ดึงรายการที่ตรงตามเงื่อนไขข้อความทั้งหมดมาก่อนเพื่อมาคำนวณระยะทาง
+        } else if (needsMemoryPagination) {
+            // โลจิกค้นหาด้วยพิกัด/รัศมี และเงื่อนไขที่ซับซ้อน: ดึงรายการที่ตรงตามเงื่อนไขข้อความทั้งหมดมาก่อนเพื่อมากรองบน Memory
             queryStr = `SELECT * FROM public.properties ${whereSQL} ORDER BY property_id ASC;`;
         } else {
             // โลจิกที่ 2: มีการเลือกตัวกรองปกติ
@@ -122,24 +137,89 @@ app.post('/api/properties', async (req, res) => {
         const result = await pool.query(queryStr, queryParams);
         let rows = result.rows;
 
-        // หากมีการกรองด้วยพิกัดและรัศมี (Haversine Filter)
-        if (hasLocationFilter) {
+        // การกรองข้อมูลด้วย Memory สำหรับเงื่อนไขที่ซับซ้อน (รัศมี, ราคา, พื้นที่) ป้องกัน Type Casting Error ในฐานข้อมูล
+        if (needsMemoryPagination) {
             rows = rows.filter(row => {
-                const itemLat = parseFloat(row.latitude || row.lat || row.use_lat || row.use);
-                const itemLng = parseFloat(row.longitude || row.lng || row.use2_lng || row.use2);
+                let keep = true;
 
-                if (!isNaN(itemLat) && !isNaN(itemLng)) {
-                    const distKm = getDistanceInKm(targetLat, targetLng, itemLat, itemLng);
-                    row._distance = distKm;
-                    return distKm <= radiusKm;
+                // 1. Haversine Filter
+                if (hasLocationFilter) {
+                    const itemLat = parseFloat(row.latitude || row.lat || row.use_lat || row.use);
+                    const itemLng = parseFloat(row.longitude || row.lng || row.use2_lng || row.use2);
+
+                    if (!isNaN(itemLat) && !isNaN(itemLng)) {
+                        const distKm = getDistanceInKm(targetLat, targetLng, itemLat, itemLng);
+                        row._distance = distKm;
+                        if (distKm > radiusKm) keep = false;
+                    } else {
+                        keep = false;
+                    }
                 }
-                return false;
+
+                // 2. กรองราคาขาย (Price Sale)
+                if (keep && criteria.priceSale) {
+                    const rawStr = String(row.price_sell || row.price || "");
+                    const numOnly = parseFloat(rawStr.replace(/[^0-9.]/g, ''));
+                    let actualPrice = isNaN(numOnly) ? 0 : numOnly;
+                    
+                    // แปลงหน่วย "ล้าน" เป็นตัวเลขเต็ม
+                    if (rawStr.includes('ล้าน') && actualPrice < 1000) {
+                        actualPrice *= 1000000;
+                    }
+
+                    if (criteria.priceSale === "ไม่เกิน 2 ล้าน" && actualPrice > 2000000) keep = false;
+                    else if (criteria.priceSale === "ไม่เกิน 5 ล้าน" && actualPrice > 5000000) keep = false;
+                    else if (criteria.priceSale === "ไม่เกิน 10 ล้าน" && actualPrice > 10000000) keep = false;
+                    else if (criteria.priceSale === "ไม่เกิน 20 ล้าน" && actualPrice > 20000000) keep = false;
+                    else if (criteria.priceSale === "ตั้งแต่ 20 ล้านเป็นต้นไป" && actualPrice < 20000000) keep = false;
+                }
+
+                // 3. กรองราคาเช่า (Price Rent)
+                if (keep && criteria.priceRent) {
+                    const rawStr = String(row.price_rent || "");
+                    const numOnly = parseFloat(rawStr.replace(/[^0-9.]/g, ''));
+                    let actualPrice = isNaN(numOnly) ? 0 : numOnly;
+
+                    if (criteria.priceRent === "ไม่เกิน 5,000" && actualPrice > 5000) keep = false;
+                    else if (criteria.priceRent === "ไม่เกิน 10,000" && actualPrice > 10000) keep = false;
+                    else if (criteria.priceRent === "ไม่เกิน 15,000" && actualPrice > 15000) keep = false;
+                    else if (criteria.priceRent === "ไม่เกิน 20,000" && actualPrice > 20000) keep = false;
+                    else if (criteria.priceRent === "ตั้งแต่ 20,000 เป็นต้นไป" && actualPrice < 20000) keep = false;
+                }
+
+                // 4. กรองเนื้อที่ (Area Max)
+                if (keep && criteria.areaMax) {
+                    const sizeStr = String(row.area || row.details || row.use3 || "");
+                    let totalSqWah = 0;
+                    
+                    const raiMatch = sizeStr.match(/([0-9.]+)\s*ไร่/);
+                    const nganMatch = sizeStr.match(/([0-9.]+)\s*งาน/);
+                    const wahMatch = sizeStr.match(/([0-9.]+)\s*(?:ตร\.?วา|ตารางวา)/);
+
+                    if (raiMatch) totalSqWah += parseFloat(raiMatch[1]) * 400;
+                    if (nganMatch) totalSqWah += parseFloat(nganMatch[1]) * 100;
+                    if (wahMatch) totalSqWah += parseFloat(wahMatch[1]);
+                    
+                    if (totalSqWah === 0) {
+                        const numOnly = parseFloat(sizeStr.replace(/[^0-9.]/g, ''));
+                        totalSqWah = isNaN(numOnly) ? 0 : numOnly;
+                    }
+
+                    if (criteria.areaMax === "ไม่เกิน 100 ตารางวา" && totalSqWah > 100) keep = false;
+                    else if (criteria.areaMax === "ไม่เกิน 400 ตารางวา" && totalSqWah > 400) keep = false;
+                    else if (criteria.areaMax === "ไม่เกิน 10 ไร่" && totalSqWah > 4000) keep = false;
+                    else if (criteria.areaMax === "มากกว่า 10 ไร่ เป็นต้นไป" && totalSqWah <= 4000) keep = false;
+                }
+
+                return keep;
             });
 
-            // เรียงลำดับอสังหาริมทรัพย์จากระยะทางที่ใกล้ศูนย์กลางพิกัดมากที่สุดขึ้นก่อน
-            rows.sort((a, b) => (a._distance || 0) - (b._distance || 0));
+            // เรียงลำดับอสังหาริมทรัพย์จากระยะทางที่ใกล้ศูนย์กลางพิกัดมากที่สุดขึ้นก่อน (หากเปิดระบบรัศมี)
+            if (hasLocationFilter) {
+                rows.sort((a, b) => (a._distance || 0) - (b._distance || 0));
+            }
 
-            // ทำ Pagination บน Memory สำหรับผลลัพธ์ที่กรองรัศมีแล้ว
+            // ทำ Pagination บน Memory สำหรับผลลัพธ์ที่ผ่านตัวกรองแล้ว
             rows = rows.slice(offset, offset + limit);
         }
 
