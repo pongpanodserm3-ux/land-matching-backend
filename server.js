@@ -231,7 +231,8 @@ app.post('/api/properties', async (req, res) => {
             facebookPostName: row.facebook_name || "",
             postDetails: row.details || "",
             latitude: row.latitude || row.lat || row.use_lat || row.use || "",
-            longitude: row.longitude || row.lng || row.use2_lng || row.use2 || ""
+            longitude: row.longitude || row.lng || row.use2_lng || row.use2 || "",
+            images: Array.isArray(row.images) ? row.images : [] // ส่ง Array ภาพบ้านออกไป
         }));
 
         res.status(200).json({
