@@ -189,7 +189,7 @@ app.post('/api/properties', async (req, res) => {
 
                 // 4. กรองเนื้อที่ (Area Max)
                 if (keep && criteria.areaMax) {
-                    const sizeStr = String(row.area || row.details || row.use3 || "");
+                    const sizeStr = String(row.area || row.details || "");
                     let totalSqWah = 0;
                     
                     const raiMatch = sizeStr.match(/([0-9.]+)\s*ไร่/);
