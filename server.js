@@ -12,7 +12,7 @@ if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
-// ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
+// Git_Server_1-1 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
 function getDistanceInKm(lat1, lon1, lat2, lon2) {
     const R = 6371; // รัศมีโลก (กม.)
     const dLat = (lat2 - lat1) * (Math.PI / 180);
