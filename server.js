@@ -12,7 +12,7 @@ if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
-// Git_Server_1-1 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
+// Git_Server_1-2 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
 function getDistanceInKm(lat1, lon1, lat2, lon2) {
     const R = 6371; // รัศมีโลก (กม.)
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -225,14 +225,11 @@ app.post('/api/properties', async (req, res) => {
 
         const mappedResults = rows.map(row => ({
             ...row,
-            postId: row.post_id || row.property_id || "",
-            salePrice: row.price_sell || row.price || "",
-            rentPrice: row.price_rent || "",
-            facebookPostName: row.facebook_name || "",
-            postDetails: row.details || "",
+            // ลบตัวแปร postId, salePrice, rentPrice, facebookPostName, postDetails ออก เพราะมันมีข้อมูลอยู่ใน ...row หมดแล้ว (ยึดชื่อคอลัมน์ตรงๆ จาก DB)
+            // คงไว้เฉพาะพิกัดและรูปภาพเพื่อรักษา Logic เดิมให้ระบบแผนที่ทำงานได้สมบูรณ์
             latitude: row.latitude || row.lat || row.use_lat || row.use || "",
             longitude: row.longitude || row.lng || row.use2_lng || row.use2 || "",
-            images: Array.isArray(row.images) ? row.images : [] // ส่ง Array ภาพบ้านออกไป
+            images: Array.isArray(row.images) ? row.images : [] 
         }));
 
         res.status(200).json({
