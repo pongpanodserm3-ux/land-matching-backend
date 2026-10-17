@@ -12,7 +12,7 @@ if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
-// Git_Server_1-2 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
+// Git_Server_1-3 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
 function getDistanceInKm(lat1, lon1, lat2, lon2) {
     const R = 6371; // รัศมีโลก (กม.)
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -115,7 +115,9 @@ app.post('/api/properties', async (req, res) => {
 
         if (!hasCriteria && !hasSearchText && !needsMemoryPagination) {
             // โลจิกที่ 1: ไม่มีตัวกรองใดๆ ให้ดึงรายการบ้านของวันอัปเดตล่าสุด
-            const latestDateResult = await pool.query(`SELECT MAX(date) as max_date FROM public.properties WHERE date IS NOT NULL AND date != ''`);
+            //--SS--const latestDateResult = await pool.query(`SELECT MAX(date) as max_date FROM public.properties WHERE date IS NOT NULL AND date != ''`);
+            const latestDateResult = await pool.query(`SELECT MAX(date) as max_date FROM public.properties WHERE date IS NOT NULL`);
+           
             const maxDate = latestDateResult.rows[0]?.max_date;
 
             if (maxDate) {
