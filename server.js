@@ -12,7 +12,7 @@ if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
-// Git_Server_1-3 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
+// Git_Server_1-2 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
 function getDistanceInKm(lat1, lon1, lat2, lon2) {
     const R = 6371; // รัศมีโลก (กม.)
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -53,12 +53,20 @@ app.post('/api/properties', async (req, res) => {
         const rawCriteria = req.body.criteria || {};
         const searchText = (req.body.searchText || "").trim();
 
-        // ดึงค่าพิกัดละติจูด ลองติจูด และรัศมีจาก criteria
+        // ดึงค่าพิกัดละติจูด ลองติจูด และรัศมีจาก criteria + รองรับ bounds สี่เหลี่ยมจากแผนที่
         const targetLat = parseFloat(rawCriteria.lat !== undefined ? rawCriteria.lat : rawCriteria.latitude);
         const targetLng = parseFloat(rawCriteria.lng !== undefined ? rawCriteria.lng : rawCriteria.longitude);
         const radiusKm = !isNaN(parseFloat(rawCriteria.radius)) ? parseFloat(rawCriteria.radius) : 1;
+
+        // v1-3 NEW: รองรับ bounds จาก frontend (กรอบแผนที่ที่มองเห็น)
+        const bounds = rawCriteria.bounds || {};
+        const latMin = parseFloat(rawCriteria.latMin || bounds.latMin || bounds._southWest?.lat || rawCriteria._southWest?.lat);
+        const latMax = parseFloat(rawCriteria.latMax || bounds.latMax || bounds._northEast?.lat || rawCriteria._northEast?.lat);
+        const lngMin = parseFloat(rawCriteria.lngMin || bounds.lngMin || bounds._southWest?.lng || rawCriteria._southWest?.lng);
+        const lngMax = parseFloat(rawCriteria.lngMax || bounds.lngMax || bounds._northEast?.lng || rawCriteria._northEast?.lng);
+        const hasBounds = !isNaN(latMin) && !isNaN(latMax) && !isNaN(lngMin) && !isNaN(lngMax);
         
-        const hasLocationFilter = !isNaN(targetLat) && !isNaN(targetLng);
+        const hasLocationFilter = (!isNaN(targetLat) && !isNaN(targetLng)) || hasBounds;
         const hasComplexFilter = rawCriteria.priceSale || rawCriteria.priceRent || rawCriteria.areaMax;
         const needsMemoryPagination = hasLocationFilter || hasComplexFilter;
 
@@ -97,6 +105,15 @@ app.post('/api/properties', async (req, res) => {
             });
         }
 
+        // v1-3 NEW: กรองตาม bounds สี่เหลี่ยมจากแผนที่ (เร็วกว่า Haversine ทั้งตาราง)
+        if (hasBounds) {
+            // กรอง lat/lng ทั้ง 4 คอลัมน์ที่เป็นไปได้ เพื่อไม่พลาดข้อมูลเก่า
+            whereClauses.push(`( (latitude BETWEEN $${paramIndex} AND $${paramIndex+1}) OR (lat BETWEEN $${paramIndex} AND $${paramIndex+1}) OR (use_lat BETWEEN $${paramIndex} AND $${paramIndex+1}) OR (use BETWEEN $${paramIndex} AND $${paramIndex+1}) )`);
+            queryParams.push(Math.min(latMin, latMax), Math.max(latMin, latMax)); paramIndex+=2;
+            whereClauses.push(`( (longitude BETWEEN $${paramIndex} AND $${paramIndex+1}) OR (lng BETWEEN $${paramIndex} AND $${paramIndex+1}) OR (use2_lng BETWEEN $${paramIndex} AND $${paramIndex+1}) OR (use2 BETWEEN $${paramIndex} AND $${paramIndex+1}) )`);
+            queryParams.push(Math.min(lngMin, lngMax), Math.max(lngMin, lngMax)); paramIndex+=2;
+        }
+
         // นำเงื่อนไข Dropdown มาเข้า SQL WHERE 
         if (criteria.province) { whereClauses.push(`province ILIKE $${paramIndex}`); queryParams.push(`%${criteria.province}%`); paramIndex++; }
         if (criteria.district) { whereClauses.push(`district ILIKE $${paramIndex}`); queryParams.push(`%${criteria.district}%`); paramIndex++; }
@@ -115,9 +132,7 @@ app.post('/api/properties', async (req, res) => {
 
         if (!hasCriteria && !hasSearchText && !needsMemoryPagination) {
             // โลจิกที่ 1: ไม่มีตัวกรองใดๆ ให้ดึงรายการบ้านของวันอัปเดตล่าสุด
-            //--SS--const latestDateResult = await pool.query(`SELECT MAX(date) as max_date FROM public.properties WHERE date IS NOT NULL AND date != ''`);
-            const latestDateResult = await pool.query(`SELECT MAX(date) as max_date FROM public.properties WHERE date IS NOT NULL`);
-           
+            const latestDateResult = await pool.query(`SELECT MAX(date) as max_date FROM public.properties WHERE date IS NOT NULL AND date != ''`);
             const maxDate = latestDateResult.rows[0]?.max_date;
 
             if (maxDate) {
@@ -144,8 +159,8 @@ app.post('/api/properties', async (req, res) => {
             rows = rows.filter(row => {
                 let keep = true;
 
-                // 1. Haversine Filter
-                if (hasLocationFilter) {
+                // 1. Haversine Filter (ถ้ามี lat/lng + radius) + Bounds Filter (ถ้ามี bounds อย่างเดียว ให้ SQL กรองไปแล้ว ข้ามได้)
+                if (hasLocationFilter && !hasBounds) {
                     const itemLat = parseFloat(row.latitude || row.lat || row.use_lat || row.use);
                     const itemLng = parseFloat(row.longitude || row.lng || row.use2_lng || row.use2);
 
@@ -216,8 +231,24 @@ app.post('/api/properties', async (req, res) => {
                 return keep;
             });
 
-            // เรียงลำดับอสังหาริมทรัพย์จากระยะทางที่ใกล้ศูนย์กลางพิกัดมากที่สุดขึ้นก่อน (หากเปิดระบบรัศมี)
-            if (hasLocationFilter) {
+            // v1-3: ถ้ามี bounds แต่ไม่มี targetLat ให้ใช้จุดกลาง bounds เป็นจุดอ้างอิงระยะทาง
+            let sortLat = targetLat;
+            let sortLng = targetLng;
+            if (hasBounds && (isNaN(sortLat) || isNaN(sortLng))) {
+                sortLat = (latMin + latMax) / 2;
+                sortLng = (lngMin + lngMax) / 2;
+            }
+            // เรียงลำดับอสังหาริมทรัพย์จากระยะทางที่ใกล้ศูนย์กลางพิกัดมากที่สุดขึ้นก่อน (หากเปิดระบบรัศมี/ bounds)
+            if (!isNaN(sortLat) && !isNaN(sortLng)) {
+                rows.forEach(r=>{
+                    const iLat = parseFloat(r.latitude || r.lat || r.use_lat || r.use);
+                    const iLng = parseFloat(r.longitude || r.lng || r.use2_lng || r.use2);
+                    if(!isNaN(iLat) && !isNaN(iLng)){
+                        r._distance = getDistanceInKm(sortLat, sortLng, iLat, iLng);
+                    }
+                });
+            }
+            if (hasLocationFilter || hasBounds) {
                 rows.sort((a, b) => (a._distance || 0) - (b._distance || 0));
             }
 
