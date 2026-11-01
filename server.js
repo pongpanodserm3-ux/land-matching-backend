@@ -12,7 +12,7 @@ if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
-// Git_Server_1-3 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
+// Git_Server_1-4 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
 function getDistanceInKm(lat1, lon1, lat2, lon2) {
     const R = 6371; // รัศมีโลก (กม.)
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -132,6 +132,13 @@ app.post('/api/properties', async (req, res) => {
             let result = await pool.query(queryStr, queryParams);
             let rows = result.rows;
 
+            // FIX v7-10-4: De-duplicate keywords + Weighted scoring - แบรนด์เฉพาะเจาะจงได้คะแนนมากกว่า
+            const uniqueKeywords = [...new Set(keywords.map(k=> (k||'').toLowerCase().trim()).filter(Boolean))];
+            const searchKeywords = hasSearchText ? searchText.split(/\s+/).map(k=>k.toLowerCase().trim()).filter(Boolean) : [];
+            const uniqueSearchKeywords = [...new Set(searchKeywords)];
+            // แยกคีย์เวิร์ดหมวด (generic) vs คีย์เวิร์ดค้นหา (specific)
+            const categoryOnly = uniqueKeywords.filter(k => !uniqueSearchKeywords.includes(k));
+            
             rows = rows.map(row => {
                 let score = 0;
                 const t = (row.title||'').toLowerCase();
@@ -139,18 +146,49 @@ app.post('/api/properties', async (req, res) => {
                 const s = (row.ai_summary||'').toLowerCase();
                 const it = (row.item_type||'').toLowerCase();
                 const pt = (row.property_type||'').toLowerCase();
-                keywords.forEach(kw => {
-                    const k = (kw||'').toLowerCase();
-                    if (!k) return;
-                    if (t.includes(k)) score += 5;
-                    if (it.includes(k)) score += 4;
-                    if (s.includes(k)) score += 3;
-                    if (d.includes(k)) score += 2;
-                    if (pt.includes(k)) score += 1;
+                const haystackAll = `${t} ${it} ${s} ${d} ${pt}`;
+                
+                // 1. ให้คะแนนคำค้นหาหลัก (จาก edit) - น้ำหนักสูง
+                uniqueSearchKeywords.forEach(k => {
+                    if (!k || k.length < 2) return;
+                    let matched = false;
+                    if (t.includes(k)) { score += 15; matched = true; }
+                    if (it.includes(k)) { score += 12; matched = true; }
+                    if (s.includes(k)) { score += 10; matched = true; }
+                    if (d.includes(k)) { score += 8; matched = true; }
+                    if (pt.includes(k)) { score += 5; matched = true; }
+                    // โบนัสพิเศษ: ถ้าเจอแบรนด์เฉพาะ เช่น นิสสัน, nissan, โตโยต้า, มาสด้า
+                    if (matched && ['นิสสัน','nissan','โตโยต้า','toyota','มาสด้า','mazda','ฮอนด้า','honda','ซัมซุง','samsung','ไอโฟน','iphone','ฟอร์ด','ford'].includes(k)) {
+                        score += 20;
+                    }
+                    // โบนัส: ถ้าเจอคำค้นหาทั้งหมดในโพสต์เดียว
+                    if (k === 'นิสสัน' || k === 'nissan') {
+                        if (t.includes('นิสสัน') || t.includes('nissan') || s.includes('นิสสัน') || s.includes('nissan')) {
+                            // นับครั้งที่เจอ
+                            const count = (haystackAll.match(new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+                            score += count * 2;
+                        }
+                    }
                 });
+                
+                // 2. ให้คะแนนหมวดทั่วไป - น้ำหนักต่ำ (กันรถทุกคันได้คะแนนเท่ากัน)
+                categoryOnly.forEach(k => {
+                    if (!k || k.length < 2) return;
+                    // คำทั่วไปอย่าง "รถ" ให้คะแนนน้อยมาก เพื่อไม่ให้กลบแบรนด์เฉพาะ
+                    const isGeneric = ['รถ','ยานพาหนะ','รถยนต์','สินค้า'].includes(k);
+                    const weight = isGeneric ? 1 : 2;
+                    if (t.includes(k)) score += weight;
+                    if (it.includes(k)) score += weight;
+                });
+                
                 return {...row, _score: score};
             });
-            rows.sort((a,b) => (b._score||0) - (a._score||0));
+            rows.sort((a,b) => {
+                if ((b._score||0) !== (a._score||0)) return (b._score||0) - (a._score||0);
+                // ถ้าคะแนนเท่ากัน ให้เรียงตาม item_id ล่าสุดก่อน
+                return (b.item_id||0) - (a.item_id||0);
+            });
+            console.log(`RANKING: search="${searchText}" keywords=${JSON.stringify(uniqueSearchKeywords)} -> top scores:`, rows.slice(0,5).map(r=>({title:(r.title||'').slice(0,40), score:r._score})));
 
             let paged = rows.slice(offset, offset+limit);
 
