@@ -12,7 +12,7 @@ if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
-// Git_Server_s7-11-2 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
+// Git_Server_s7-11-3 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
 function getDistanceInKm(lat1, lon1, lat2, lon2) {
     const R = 6371; // รัศมีโลก (กม.)
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -89,7 +89,7 @@ app.post('/api/properties', async (req, res) => {
         const isMarketplaceSearch = !!(criteria.itemType || criteria.item_type || criteria.productCategory || (criteria.table && String(criteria.table).includes('marketplace')));
 
         // MODEL: บังคับใช้ gemini-3.5-flash-lite เสมอ ตามคำสั่ง
-        const GEMINI_MODEL = "gemini-3.5-flash-lite";
+        const GEMINI_MODEL = "gemini-3.5-flash-lite"; // MODEL: บังคับใช้ gemini-3.5-flash-lite เสมอ ตามคำสั่งเคร่งครัด
 
         let queryStr = "";
         let queryParams = [];
@@ -196,8 +196,9 @@ app.post('/api/properties', async (req, res) => {
             if (orClauses.length > 0) {
                 whereClauses.push(`(${orClauses.join(" OR ")})`);
             }
-            if (criteria.province) { whereClauses.push(`province ILIKE $${paramIndex}`); queryParams.push(`%${criteria.province}%`); paramIndex++; }
-            if (criteria.district) { whereClauses.push(`district ILIKE $${paramIndex}`); queryParams.push(`%${criteria.district}%`); paramIndex++; }
+            // FIX v7-11-3: ไม่กรอง province แบบตัดทิ้ง - กรุงเทพมาก่อน ใกล้เคียงตามมา - ใช้โมเดล gemini-3.5-flash-lite เสมอ
+            const selectedProvinceForRank = criteria.province || null;
+            const selectedDistrictForRank = criteria.district || null;
 
             let whereSQL = whereClauses.length > 0 ? "WHERE " + whereClauses.join(" AND ") : "";
             queryStr = `SELECT * FROM public.marketplace_items ${whereSQL} ORDER BY item_id DESC LIMIT 100;`;
@@ -255,9 +256,42 @@ app.post('/api/properties', async (req, res) => {
                 
                 return {...row, _score: score};
             });
+            // FIX v7-11-3: Rank จังหวัด - กรุงเทพมาก่อน ใกล้เคียงตามมา - ใช้โมเดล gemini-3.5-flash-lite เสมอ
+            const provinceNeighbors = {
+                "กรุงเทพมหานคร": ["นนทบุรี","ปทุมธานี","สมุทรปราการ","นครปฐม","สมุทรสาคร","กรุงเทพ"],
+                "กรุงเทพ": ["นนทบุรี","ปทุมธานี","สมุทรปราการ","นครปฐม","สมุทรสาคร","กรุงเทพมหานคร"],
+                "นนทบุรี": ["กรุงเทพ","กรุงเทพมหานคร","ปทุมธานี","พระนครศรีอยุธยา","นครปฐม"],
+                "ปทุมธานี": ["กรุงเทพ","กรุงเทพมหานคร","นนทบุรี","พระนครศรีอยุธยา","สระบุรี"],
+                "สมุทรปราการ": ["กรุงเทพ","กรุงเทพมหานคร","ฉะเชิงเทรา","สมุทรสาคร","นนทบุรี"],
+                "นครปฐม": ["กรุงเทพ","นนทบุรี","สมุทรสาคร","ราชบุรี"],
+                "สมุทรสาคร": ["กรุงเทพ","สมุทรปราการ","นครปฐม","สมุทรสงคราม"],
+                "พระนครศรีอยุธยา": ["ปทุมธานี","นนทบุรี","สระบุรี","อ่างทอง"],
+                "ชลบุรี": ["ฉะเชิงเทรา","ระยอง","สมุทรปราการ"],
+                "เชียงใหม่": ["เชียงราย","ลำปาง","ลำพูน","แม่ฮ่องสอน"]
+            };
+            rows = rows.map(r=>{
+                let provinceScore = 0;
+                const selProv = typeof selectedProvinceForRank !== 'undefined' ? selectedProvinceForRank : (criteria.province || null);
+                const selDist = typeof selectedDistrictForRank !== 'undefined' ? selectedDistrictForRank : (criteria.district || null);
+                if (selProv) {
+                    const rp = (r.province||'').toString();
+                    const rd = (r.district||'').toString();
+                    if (rp.includes(selProv) || selProv.includes(rp) || (selProv==='กรุงเทพ' && rp.includes('กรุงเทพมหานคร')) || (selProv==='กรุงเทพมหานคร' && rp.includes('กรุงเทพ'))) {
+                        provinceScore += 1000;
+                    } else if (provinceNeighbors[selProv] && provinceNeighbors[selProv].some(n=> rp.includes(n))) {
+                        provinceScore += 500;
+                    } else if (rp) {
+                        provinceScore += 10;
+                    }
+                    if (selDist && rd.includes(selDist)) provinceScore += 200;
+                }
+                const total = (r._score||0) + provinceScore;
+                return {...r, _provinceScore: provinceScore, _totalScore: total};
+            });
             rows.sort((a,b) => {
+                if ((b._totalScore||0) !== (a._totalScore||0)) return (b._totalScore||0) - (a._totalScore||0);
+                if ((b._provinceScore||0) !== (a._provinceScore||0)) return (b._provinceScore||0) - (a._provinceScore||0);
                 if ((b._score||0) !== (a._score||0)) return (b._score||0) - (a._score||0);
-                // ถ้าคะแนนเท่ากัน ให้เรียงตาม item_id ล่าสุดก่อน
                 return (b.item_id||0) - (a.item_id||0);
             });
             console.log(`RANKING: search="${searchText}" keywords=${JSON.stringify(uniqueSearchKeywords)} -> top scores:`, rows.slice(0,5).map(r=>({title:(r.title||'').slice(0,40), score:r._score})));
@@ -376,8 +410,25 @@ app.post('/api/properties', async (req, res) => {
                 }
                 return keep;
             });
-            if (hasLocationFilter) {
-                rows.sort((a, b) => (a._distance || 0) - (b._distance || 0));
+            if (hasLocationFilter || criteria.province) {
+                // FIX v7-11-3: สำหรับอสังหา - จังหวัดที่เลือกมาก่อน แล้วค่อยเรียงตามระยะ - gemini-3.5-flash-lite
+                const provNeighbors2 = {
+                    "กรุงเทพมหานคร": ["นนทบุรี","ปทุมธานี","สมุทรปราการ"],
+                    "กรุงเทพ": ["นนทบุรี","ปทุมธานี","สมุทรปราการ"]
+                };
+                rows = rows.map(r=>{
+                    let ps=0;
+                    if(criteria.province){
+                        const rp=(r.province||'').toString();
+                        if(rp.includes(criteria.province) || (criteria.province==='กรุงเทพ' && rp.includes('กรุงเทพมหานคร'))) ps+=1000;
+                        else if(provNeighbors2[criteria.province] && provNeighbors2[criteria.province].some(n=>rp.includes(n))) ps+=500;
+                    }
+                    return {...r, _provScore: ps};
+                });
+                rows.sort((a,b)=>{
+                    if((b._provScore||0)!==(a._provScore||0)) return (b._provScore||0)-(a._provScore||0);
+                    return (a._distance||0)-(b._distance||0);
+                });
             }
             rows = rows.slice(offset, offset + limit);
         }
