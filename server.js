@@ -12,7 +12,7 @@ if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
-// Git_Server_s8-1  Locked 5 Tabs + buildLocationIndex + Progressive Radius
+// Git_Server_s15-1 ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
 function getDistanceInKm(lat1, lon1, lat2, lon2) {
     const R = 6371; // รัศมีโลก (กม.)
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -24,93 +24,6 @@ function getDistanceInKm(lat1, lon1, lat2, lon2) {
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
 }
-
-// ================= v15.12 PATCH: Locked 5 Tabs + buildLocationIndex + Hierarchy + Progressive Radius =================
-// v15.12: สร้าง Gazetteer อัตโนมัติจาก DB + คิดคะแนนแบบลำดับชั้นเฉพาะอสังหา + Progressive Radius 1,2,5,10,20,50
-let LOCATION_INDEX = { provinces: new Set(), districts: new Set(), roads: new Set(), sois: new Set() };
-let LOCATION_INDEX_BUILT = false;
-
-async function buildLocationIndex(pool){
-  try{
-    const res = await pool.query(`SELECT DISTINCT province, district, road, soi FROM properties WHERE province IS NOT NULL LIMIT 5000`);
-    res.rows.forEach(r=>{
-      if(r.province) LOCATION_INDEX.provinces.add(r.province.trim());
-      if(r.district) LOCATION_INDEX.districts.add(r.district.trim());
-      if(r.road) LOCATION_INDEX.roads.add(r.road.trim());
-      if(r.soi) LOCATION_INDEX.sois.add(r.soi.trim());
-    });
-    LOCATION_INDEX_BUILT = true;
-    console.log(`✅ [v15.12] LOCATION_INDEX built: ${LOCATION_INDEX.provinces.size} prov, ${LOCATION_INDEX.districts.size} dist, ${LOCATION_INDEX.roads.size} road`);
-  }catch(e){ console.error('[v15.12] buildLocationIndex error', e.message); }
-}
-
-const DISTRICT_GEOCODE = {
-  "บางกะปิ": { lat: 13.7648, lng: 100.6470, province: "กรุงเทพมหานคร" },
-  "บึงกุ่ม": { lat: 13.8073, lng: 100.6690, province: "กรุงเทพมหานคร" },
-  "ลาดพร้าว": { lat: 13.8036, lng: 100.6073, province: "กรุงเทพมหานคร" },
-  "ห้วยขวาง": { lat: 13.7766, lng: 100.5731, province: "กรุงเทพมหานคร" },
-  "วังทองหลาง": { lat: 13.7791, lng: 100.6065, province: "กรุงเทพมหานคร" },
-  "สะพานสูง": { lat: 13.7502, lng: 100.6876, province: "กรุงเทพมหานคร" },
-  "มีนบุรี": { lat: 13.8132, lng: 100.7343, province: "กรุงเทพมหานคร" },
-  "คันนายาว": { lat: 13.8292, lng: 100.6838, province: "กรุงเทพมหานคร" },
-  "ดอนเมือง": { lat: 13.9120, lng: 100.6000, province: "กรุงเทพมหานคร" },
-  "จตุจักร": { lat: 13.8223, lng: 100.5475, province: "กรุงเทพมหานคร" },
-  "บางเขน": { lat: 13.8730, lng: 100.6050, province: "กรุงเทพมหานคร" }
-};
-
-const STOPWORDS_TH = new Set(['ขาย','เช่า','บ้าน','คอนโด','ที่ดิน','ห้อง','ทาวน์เฮ้าส์','อาคารพาณิชย์','ขายบ้าน','หาบ้าน','หา','แถว','ย่าน','ใกล้','บริเวณ','house','home','village','sale','rent','condo','บ้านเดี่ยว','บ้านแฝด']);
-
-function extractLocationEntities(searchText){
-  const words = searchText.split(/\s+|,/).map(w=>w.trim()).filter(Boolean);
-  let found = { province: null, district: null, road: null, keywords: [] };
-  words.forEach(w=>{
-    if(DISTRICT_GEOCODE[w]){ found.district = w; found.province = DISTRICT_GEOCODE[w].province; }
-    else if(LOCATION_INDEX.provinces.has(w)) found.province = w;
-    else if(LOCATION_INDEX.districts.has(w)) found.district = w;
-    else if(LOCATION_INDEX.roads.has(w)) found.road = w;
-    else if(!STOPWORDS_TH.has(w.toLowerCase()) && w.length>=2) found.keywords.push(w);
-  });
-  return found;
-}
-
-function calcHierarchyScore(property, entities, userLat, userLng){
-  let score = 0;
-  const rp = (property.province||'').toString();
-  const rd = (property.district||'').toString();
-  const rr = (property.road||'').toString();
-  if(entities.province && rp.includes(entities.province)) score += 1000;
-  if(entities.district && rd.includes(entities.district)) score += 500;
-  if(entities.road && rr.includes(entities.road)) score += 300;
-  // bonus: exact district match from DISTRICT_GEOCODE
-  if(entities.district && rd === entities.district) score += 200;
-  if(userLat && property.latitude && property.longitude){
-    const d = getDistanceInKm(userLat, userLng, parseFloat(property.latitude), parseFloat(property.longitude));
-    property._distance = d;
-    score += Math.max(0, 200 - d*8); // 1km=192, 5km=160, 20km=40
-  }
-  entities.keywords.forEach(kw=>{
-    const hay = `${property.title||''} ${property.property_type||''} ${property.details||''} ${property.project||''}`.toLowerCase();
-    if(hay.includes(kw.toLowerCase())) score += 10;
-  });
-  return score;
-}
-
-function progressiveRadiusSearch(allRows, cLat, cLng, steps=[1,2,5,10,20,50]){
-  const withDist = allRows.map(r=>{
-    const la = parseFloat(r.latitude||r.lat||r.use_lat);
-    const ln = parseFloat(r.longitude||r.lng||r.use2_lng);
-    if(isNaN(la)||isNaN(ln)) return null;
-    return {...r, _distance: getDistanceInKm(cLat,cLng,la,ln)};
-  }).filter(Boolean);
-  for(const rad of steps){
-    const found = withDist.filter(r=>r._distance <= rad).sort((a,b)=>a._distance-b._distance);
-    if(found.length>0) return { results: found, usedRadius: rad, center:{lat:cLat,lng:cLng} };
-  }
-  const sorted = withDist.sort((a,b)=>a._distance-b._distance).slice(0,20);
-  return { results: sorted, usedRadius: 50, fallback:true, center:{lat:cLat,lng:cLng} };
-}
-// ================= END v15.12 PATCH =================
-
 
 // 1. สร้าง Express และ HTTP Server
 const app = express();
@@ -142,11 +55,19 @@ app.post('/api/properties', async (req, res) => {
         const rawCriteria = req.body.criteria || {};
         const searchText = (req.body.searchText || "").trim();
 
+        // [s15-1 SEARCHMODE] โหมดค้นหาแยกขาด - Frontend i15-4 ส่ง searchMode มาด้วย
+        // MAP: ตัดด้วยรัศมีอย่างเดียว, ไม่สน Dropdown (Dropdown ถูกทิ้งตั้งแต่ Frontend แล้ว)
+        // DROPDOWN: ค้นด้วย Dropdown อย่างเดียว, ห้ามเอารัศมีมาตัด - พิกัด (refLat/refLng) ใช้แค่เรียงใกล้->ไกล
+        const searchMode = (rawCriteria.searchMode === 'MAP' || rawCriteria.searchMode === 'DROPDOWN') ? rawCriteria.searchMode : ((rawCriteria.lat !== undefined || rawCriteria.latitude !== undefined) ? 'MAP' : 'DROPDOWN');
+        const refLat = parseFloat(rawCriteria.refLat !== undefined ? rawCriteria.refLat : rawCriteria.ref_lat);
+        const refLng = parseFloat(rawCriteria.refLng !== undefined ? rawCriteria.refLng : rawCriteria.ref_lng);
         const targetLat = parseFloat(rawCriteria.lat !== undefined ? rawCriteria.lat : rawCriteria.latitude);
         const targetLng = parseFloat(rawCriteria.lng !== undefined ? rawCriteria.lng : rawCriteria.longitude);
         const radiusKm = !isNaN(parseFloat(rawCriteria.radius)) ? parseFloat(rawCriteria.radius) : 1;
         
-        const hasLocationFilter = !isNaN(targetLat) && !isNaN(targetLng);
+        // [s15-1] DROPDOWN โหมด: ไม่มี location filter แบบตัดทิ้ง - พิกัดเป็นแค่ตัวเรียง
+        const hasLocationFilter = searchMode === 'MAP' && !isNaN(targetLat) && !isNaN(targetLng);
+        const hasRefLocation = searchMode === 'DROPDOWN' && !isNaN(refLat) && !isNaN(refLng);
         const hasComplexFilter = rawCriteria.priceSale || rawCriteria.priceRent || rawCriteria.areaMax;
         const needsMemoryPagination = hasLocationFilter || hasComplexFilter;
 
@@ -457,6 +378,12 @@ app.post('/api/properties', async (req, res) => {
                         keep = false;
                     }
                 }
+                // [s15-1] DROPDOWN โหมด: คำนวณระยะจากหมุดอ้างอิงไว้เรียงอย่างเดียว ห้ามตัดทิ้ง ไม่ว่าห่างแค่ไหน / ไม่มีพิกัดก็เก็บไว้ (_distance=null อยู่ท้าย)
+                if (hasRefLocation) {
+                    const rowLat2 = parseFloat(row.latitude || row.lat || row.use_lat || row.use);
+                    const rowLng2 = parseFloat(row.longitude || row.lng || row.use2_lng || row.use2);
+                    row._distance = (!isNaN(rowLat2) && !isNaN(rowLng2)) ? getDistanceInKm(refLat, refLng, rowLat2, rowLng2) : null;
+                }
                 if (keep && criteria.priceSale) {
                     const rawStr = String(row.price_sell || row.price || "");
                     const numOnly = parseFloat(rawStr.replace(/[^0-9.]/g, ''));
@@ -497,7 +424,7 @@ app.post('/api/properties', async (req, res) => {
                 }
                 return keep;
             });
-            if (hasLocationFilter || criteria.province) {
+            if (hasLocationFilter || criteria.province || hasRefLocation) { // [s15-1] DROPDOWN ที่มีหมุดอ้างอิงก็ต้องเรียงตามระยะด้วย
                 // FIX v7-11-3: สำหรับอสังหา - จังหวัดที่เลือกมาก่อน แล้วค่อยเรียงตามระยะ - gemini-3.5-flash-lite
                 const provNeighbors2 = {
                     "กรุงเทพมหานคร": ["นนทบุรี","ปทุมธานี","สมุทรปราการ"],
@@ -520,62 +447,12 @@ app.post('/api/properties', async (req, res) => {
             rows = rows.slice(offset, offset + limit);
         }
 
-
-        // v15.12: PROPERTY ONLY progressive fallback + hierarchy
-        if(!isMarketplaceSearch){
-            // if no rows, try progressive search around district center or user location
-            if(rows.length===0){
-                const searchTxt = searchText || "";
-                const entities = extractLocationEntities(searchTxt);
-                let cLat = targetLat, cLng = targetLng;
-                if(isNaN(cLat) && entities.district && DISTRICT_GEOCODE[entities.district]){
-                    cLat = DISTRICT_GEOCODE[entities.district].lat;
-                    cLng = DISTRICT_GEOCODE[entities.district].lng;
-                }
-                if(isNaN(cLat)){
-                    // use default Bangkapi if nothing
-                    cLat = 13.7648; cLng = 100.6470;
-                }
-                // need all rows unfiltered for progressive search - re-query all properties limited
-                try{
-                    const allRes = await pool.query('SELECT * FROM properties WHERE latitude IS NOT NULL AND longitude IS NOT NULL LIMIT 5000');
-                    const prog = progressiveRadiusSearch(allRes.rows, cLat, cLng, [1,2,5,10,20,50]);
-                    console.log(`[v15.12 PROPERTY FALLBACK] center ${cLat},${cLng} radius ${prog.usedRadius} found ${prog.results.length}`);
-                    return res.status(200).json({
-                        status: 'nearby',
-                        results: prog.results.map(r=>({...r, latitude:r.latitude||r.lat, longitude:r.longitude||r.lng, images: Array.isArray(r.images)?r.images:[] })),
-                        nextOffset: prog.results.length,
-                        hasMore: false,
-                        usedRadius: prog.usedRadius,
-                        center: prog.center,
-                        model: GEMINI_MODEL,
-                        message: `ไม่พบตรงเงื่อนไขพอดี แสดง ${prog.results.length} รายการใกล้สุดใน ${prog.usedRadius} กม.`
-                    });
-                }catch(e){ console.error('progressive fallback error', e); }
-            } else {
-                // hierarchy scoring for property
-                const entities = extractLocationEntities(searchText || "");
-                rows = rows.map(r=>{
-                    const s = calcHierarchyScore(r, entities, targetLat, targetLng);
-                    return {...r, _totalScore: s, _hierarchyScore: s};
-                });
-                rows.sort((a,b)=>{
-                    if((b._totalScore||0)!==(a._totalScore||0)) return (b._totalScore||0)-(a._totalScore||0);
-                    return (a._distance||0)-(b._distance||0);
-                });
-            }
-        } else {
-            // MARKETPLACE / LIFESTYLE / SERVICE - keep original relevance, no heavy location boost
-            console.log(`[v15.12 MARKETPLACE] mode=${criteria.itemType||criteria.table} scoring by _score only, no progressive radius`);
-        }
-
         const mappedResults = rows.map(row => ({
             ...row,
             latitude: row.latitude || row.lat || row.use_lat || row.use || "",
             longitude: row.longitude || row.lng || row.use2_lng || row.use2 || "",
             images: Array.isArray(row.images) ? row.images : [] 
         }));
-
 
         res.status(200).json({
             status: 'success',
@@ -608,7 +485,6 @@ const pool = new Pool({
     ssl: { rejectUnauthorized: false }
 });
 
-buildLocationIndex(pool);
 pool.connect((err, client, release) => {
     if (err) {
         console.error('❌ Database connection error:', err.stack);
