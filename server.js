@@ -6,13 +6,17 @@ const cors = require('cors');
 
 const PORT = process.env.PORT || 8080;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+// FIX s17-2: whitelist property_type 8 ค่า ตรงกับ fb-ingest ALLOWED_PROPERTY_TYPE + แปลงคำพ้องเก่า -> คำมาตรฐาน
+const ALLOWED_PROPERTY_TYPE_SRV = ['บ้าน','คอนโด','ทาวน์เฮาส์','อาคารพาณิชย์','ที่ดิน','ร้านค้า','ที่พักให้เช่า','อื่นๆ'];
+const PROP_SYNONYMS_SRV = {'บ้านเดี่ยว':'บ้าน','บ้านแฝด':'บ้าน','บ้านทาวน์เฮาส์':'บ้าน','พูลวิลล่า':'บ้าน','บ้านพัก':'บ้าน','บ้านพักตากอากาศ':'บ้าน','คฤหาสน์':'บ้าน','ห้องชุด':'คอนโด','คอนโดมิเนียม':'คอนโด','คอนโดฯ':'คอนโด','ห้องพักคอนโด':'คอนโด','ที่ดินเปล่า':'ที่ดิน','ที่ดินเปล่าถมแล้ว':'ที่ดิน','ที่ดินพร้อมสิ่งปลูกสร้าง':'ที่ดิน','ทาวน์โฮม':'ทาวน์เฮาส์','ทาวน์เฮ้าส์':'ทาวน์เฮาส์','ทาวน์เฮาส':'ทาวน์เฮาส์','ห้องเช่า':'ที่พักให้เช่า','หอพัก':'ที่พักให้เช่า','อพาร์ทเมนต์':'ที่พักให้เช่า','อพาร์ทเม้นท์':'ที่พักให้เช่า','อพาร์ตเม้นท์':'ที่พักให้เช่า','แมนชั่น':'ที่พักให้เช่า','รีสอร์ท':'ที่พักให้เช่า','โรงแรม':'ที่พักให้เช่า','เกสต์เฮาส์':'ที่พักให้เช่า','ตึกแถว':'อาคารพาณิชย์','อาคารพานิชย์':'อาคารพาณิชย์','โฮมออฟฟิศ':'อาคารพาณิชย์','ออฟฟิศ':'อาคารพาณิชย์','คลังสินค้า':'อาคารพาณิชย์','โกดัง':'อาคารพาณิชย์','โรงงานผลิต':'อาคารพาณิชย์','โรงงาน':'อาคารพาณิชย์'};
+function normalizePropertyTypeSrv(v){ const s=(v||'').toString().trim(); if(!s) return s; if(ALLOWED_PROPERTY_TYPE_SRV.includes(s)) return s; if(PROP_SYNONYMS_SRV[s]) return PROP_SYNONYMS_SRV[s]; return null; }
 const DATABASE_URL = process.env.DATABASE_URL;
 
 if (!GEMINI_API_KEY) {
     console.error("❌ ERROR: GEMINI_API_KEY is not set!");
 }
 
-// Git_Server_s17-1  ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
+// Git_Server_s20-1  ฟังก์ชันคำนวณระยะทางระหว่างพิกัด 2 จุดด้วยสูตร Haversine Formula (กิโลเมตร)
 function getDistanceInKm(lat1, lon1, lat2, lon2) {
     const R = 6371; // รัศมีโลก (กม.)
     const dLat = (lat2 - lat1) * (Math.PI / 180);
@@ -336,7 +340,7 @@ app.post('/api/properties', async (req, res) => {
         if (criteria.province) { whereClauses.push(`province ILIKE $${paramIndex}`); queryParams.push(`%${criteria.province}%`); paramIndex++; }
         if (criteria.district) { whereClauses.push(`district ILIKE $${paramIndex}`); queryParams.push(`%${criteria.district}%`); paramIndex++; }
         if (criteria.road) { whereClauses.push(`road ILIKE $${paramIndex}`); queryParams.push(`%${criteria.road}%`); paramIndex++; }
-        if (criteria.propertyType) { whereClauses.push(`property_type ILIKE $${paramIndex}`); queryParams.push(`%${criteria.propertyType}%`); paramIndex++; }
+        if (criteria.propertyType) { const _pt = normalizePropertyTypeSrv(criteria.propertyType); if (_pt) { whereClauses.push(`property_type = $${paramIndex}`); queryParams.push(_pt); paramIndex++; } else { console.warn('[s17-2] propertyType นอก whitelist ถูกตัดทิ้ง:', criteria.propertyType); } }
         if (criteria.project) { whereClauses.push(`project ILIKE $${paramIndex}`); queryParams.push(`%${criteria.project}%`); paramIndex++; }
         if (criteria.priceType) { whereClauses.push(`price_type ILIKE $${paramIndex}`); queryParams.push(`%${criteria.priceType}%`); paramIndex++; }
         if (criteria.soi) { whereClauses.push(`details ILIKE $${paramIndex}`); queryParams.push(`%${criteria.soi}%`); paramIndex++; }
